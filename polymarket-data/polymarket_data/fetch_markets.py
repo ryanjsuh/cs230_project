@@ -54,6 +54,11 @@ class Market(BaseModel):
     tokens: list[dict[str, Any]] = Field(
         default_factory=list, description="Token information"
     )
+    clob_token_ids: list[str] | None = Field(
+        None,
+        alias="clobTokenIds",
+        description="CLOB token IDs (JSON string array from API)",
+    )
     volume: str | None = Field(None, description="Trading volume")
     liquidity: str | None = Field(None, description="Market liquidity")
 
@@ -108,6 +113,46 @@ class Market(BaseModel):
             logger.warning(f"Unexpected type for list field: {type(v)}")
             return []
 
+    @field_validator("clob_token_ids", mode="before")
+    @classmethod
+    def parse_clob_token_ids(cls, v: Any) -> list[str] | None:
+        """Parse clobTokenIds from Gamma API.
+
+        The Gamma API returns clobTokenIds as a JSON-encoded string array.
+        This validator handles both string and list formats.
+
+        Args:
+            v: Either a list, a JSON string representing a list, or None
+
+        Returns:
+            Parsed list of token ID strings, or None if not present/invalid
+        """
+        if v is None:
+            return None
+
+        if isinstance(v, str):
+            # Parse JSON string to list
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    # Convert all items to strings
+                    return [str(item) for item in parsed]
+                else:
+                    logger.warning(
+                        f"Expected list in clobTokenIds JSON string, got {type(parsed)}"
+                    )
+                    return None
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse clobTokenIds JSON string: {e}")
+                return None
+        elif isinstance(v, list):
+            # Already a list, convert to strings
+            return [str(item) for item in v]
+        else:
+            # Unexpected type
+            logger.warning(f"Unexpected type for clobTokenIds: {type(v)}")
+            return None
+
     def is_resolved_within_lookback(self, lookback_days: int) -> bool:
         """Check if market was closed/resolved within the lookback period.
 
@@ -139,20 +184,26 @@ class Market(BaseModel):
     def get_token_ids(self) -> list[str]:
         """Extract token IDs for price history fetching.
 
-        Tries multiple key names since Polymarket API may use different formats:
-        - "token_id" (snake_case)
-        - "tokenId" (camelCase)
-        - "id" (generic)
+        Primary source: clobTokenIds field (from Gamma API)
+        Fallback: tokens field with multiple key formats
 
         Returns:
-            List of token IDs from the tokens field
+            List of token IDs
         """
         ids: list[str] = []
-        for token in self.tokens:
-            # Try multiple possible key names
-            tid = token.get("token_id") or token.get("tokenId") or token.get("id")
-            if tid:
-                ids.append(str(tid))
+
+        # Primary: Use clobTokenIds if available (most reliable source)
+        if self.clob_token_ids:
+            ids.extend(self.clob_token_ids)
+
+        # Fallback: Extract from tokens array (for backwards compatibility)
+        if not ids and self.tokens:
+            for token in self.tokens:
+                # Try multiple possible key names
+                tid = token.get("token_id") or token.get("tokenId") or token.get("id")
+                if tid:
+                    ids.append(str(tid))
+
         return ids
 
 
