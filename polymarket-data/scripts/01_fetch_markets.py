@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Script to fetch resolved markets from Polymarket Gamma API.
-
-This script fetches all markets that were closed/resolved within the last
-365 days (configurable) and saves them to a JSON file.
+"""
+Script to fetch resolved markets from Polymarket Gamma API
 
 Usage:
     python scripts/01_fetch_markets.py
     python scripts/01_fetch_markets.py --lookback-days 180
     python scripts/01_fetch_markets.py --output data/raw/my_markets.json
-    python scripts/01_fetch_markets.py --max-markets 100  # For testing
+    python scripts/01_fetch_markets.py --max-markets 100
 """
 
 import argparse
@@ -17,14 +15,11 @@ import sys
 from pathlib import Path
 
 # Add parent directory to path for direct script execution
-# Note: For production, prefer running as module (python -m scripts.01_fetch_markets)
-# or installing the package (pip install -e .)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from polymarket_data.config import settings
 from polymarket_data.fetch_markets import fetch_resolved_markets
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -32,8 +27,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Main entry point for market fetching script
 def main() -> None:
-    """Main entry point for market fetching script."""
     parser = argparse.ArgumentParser(
         description="Fetch resolved Polymarket markets",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -69,7 +64,6 @@ def main() -> None:
     logger.info("=" * 60)
 
     try:
-        # Fetch markets
         markets = fetch_resolved_markets(
             lookback_days=args.lookback_days,
             output_path=args.output,
@@ -81,12 +75,10 @@ def main() -> None:
         logger.info(f"Saved to: {args.output}")
         logger.info("=" * 60)
 
-        # Print some summary stats
         if markets:
             logger.info("\nSummary:")
             logger.info(f"  Total markets: {len(markets)}")
 
-            # Count by category
             categories = {}
             for market in markets:
                 cat = market.category or "Unknown"

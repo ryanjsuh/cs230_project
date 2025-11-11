@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-"""Script to clean and combine all market data into a single Parquet file.
-
-This script reads markets and price histories from steps 1 and 2, performs
-time-alignment to a fixed frequency, adds resolution-aware features, and
-exports to a single Parquet file.
-
-Prerequisites:
-    1. Run scripts/01_fetch_markets.py to generate markets.json
-    2. Run scripts/02_fetch_history.py to generate price history JSON files
+"""
+Script to clean and combine all market data into a single Parquet file
 
 Usage:
     python scripts/03_clean_all.py
@@ -21,14 +14,11 @@ import sys
 from pathlib import Path
 
 # Add parent directory to path for direct script execution
-# Note: For production, prefer running as module (python -m scripts.03_clean_all)
-# or installing the package (pip install -e .)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from polymarket_data.clean import clean_and_combine_data
 from polymarket_data.config import settings
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -36,8 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Main entry point for data cleaning script
 def main() -> None:
-    """Main entry point for data cleaning script."""
     parser = argparse.ArgumentParser(
         description=(
             "Clean and combine Polymarket data into Parquet.\n\n"
@@ -74,7 +64,6 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Validate input files exist
     if not args.markets.exists():
         logger.error(f"Markets file not found: {args.markets}")
         logger.error(
@@ -89,7 +78,6 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Use settings default if not specified
     resample_freq = args.resample_freq or settings.resample_frequency
 
     logger.info("=" * 60)
@@ -102,8 +90,6 @@ def main() -> None:
     logger.info("=" * 60)
 
     try:
-        # Clean and combine all data
-        # Note: Output parent directory is created by the library
         df = clean_and_combine_data(
             markets_file=args.markets,
             price_history_dir=args.price_history_dir,
@@ -115,12 +101,10 @@ def main() -> None:
         logger.info("Data Processing Complete!")
         logger.info("=" * 60)
 
-        # Check for empty DataFrame
         if df.empty:
             logger.warning("No data was processed (empty DataFrame)")
             sys.exit(0)
 
-        # Print dataset summary with defensive column checks
         logger.info("\nDataset Summary:")
         logger.info(f"  Total rows: {len(df):,}")
         logger.info(f"  Columns: {len(df.columns)}")
@@ -131,7 +115,6 @@ def main() -> None:
         if "token_id" in df.columns:
             logger.info(f"  Unique tokens: {df['token_id'].nunique()}")
 
-        # Target variable distribution (critical for logistic regression)
         if "won" in df.columns:
             win_counts = df["won"].value_counts().sort_index()
             total = len(df)
@@ -141,13 +124,11 @@ def main() -> None:
                 label = "Won" if value == 1 else "Lost"
                 logger.info(f"  {label} ({value}): {count:,} ({pct:.1f}%)")
 
-        # Time range
         if "timestamp" in df.columns:
             logger.info(f"\nTime Range:")
             logger.info(f"  Start: {df['timestamp'].min()}")
             logger.info(f"  End: {df['timestamp'].max()}")
 
-        # Categories (show top 10 to avoid spam)
         if "category" in df.columns and "market_id" in df.columns:
             logger.info(f"\nTop Categories:")
             category_counts = (
@@ -156,14 +137,12 @@ def main() -> None:
                 .sort_values(ascending=False)
             )
 
-            # Show top 10 categories
             for category, count in category_counts.head(10).items():
                 logger.info(f"  {category}: {count} markets")
 
             if len(category_counts) > 10:
                 logger.info(f"  ... and {len(category_counts) - 10} more categories")
 
-        # Column list
         logger.info(f"\nColumns ({len(df.columns)}):")
         for col in df.columns:
             logger.info(f"  - {col}")
@@ -171,7 +150,6 @@ def main() -> None:
         logger.info(f"\nOutput saved to: {args.output}")
 
     except ValueError as e:
-        # Specific handling for "no data" error from cleaner
         logger.error(f"No data to process: {e}")
         sys.exit(1)
     except Exception as e:
