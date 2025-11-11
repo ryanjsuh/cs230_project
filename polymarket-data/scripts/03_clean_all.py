@@ -131,6 +131,16 @@ def main() -> None:
         if "token_id" in df.columns:
             logger.info(f"  Unique tokens: {df['token_id'].nunique()}")
 
+        # Target variable distribution (critical for logistic regression)
+        if "won" in df.columns:
+            win_counts = df["won"].value_counts().sort_index()
+            total = len(df)
+            logger.info(f"\nTarget Variable ('won') Distribution:")
+            for value, count in win_counts.items():
+                pct = (count / total) * 100
+                label = "Won" if value == 1 else "Lost"
+                logger.info(f"  {label} ({value}): {count:,} ({pct:.1f}%)")
+
         # Time range
         if "timestamp" in df.columns:
             logger.info(f"\nTime Range:")

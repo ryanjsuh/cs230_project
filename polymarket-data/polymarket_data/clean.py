@@ -194,10 +194,62 @@ class MarketDataProcessor:
             df["resolution_time"] = None
             df["hours_to_resolution"] = None
 
+        # Add final price (price at resolution time) for feature engineering
+        # Use the last available price before/at resolution
+        if not df.empty:
+            df["final_price"] = df["price"].iloc[-1]
+        else:
+            df["final_price"] = None
+
         # Reset index to make timestamp a column
         df = df.reset_index()
 
         return df
+
+    def _determine_winning_outcome(self, market: Market) -> int | None:
+        """Determine which outcome index won the market based on outcome_prices.
+
+        For resolved markets, the winning outcome should have a price close to 1.0.
+        If outcome_prices are not available or market is not resolved, returns None.
+
+        Args:
+            market: Market object
+
+        Returns:
+            Index of winning outcome (0-based), or None if cannot determine
+        """
+        # Only process resolved/closed markets
+        if not market.closed:
+            return None
+
+        # Need outcome_prices to determine winner
+        if not market.outcome_prices or len(market.outcome_prices) == 0:
+            return None
+
+        # Parse outcome prices (they come as strings from API)
+        try:
+            prices = [float(p) for p in market.outcome_prices]
+        except (ValueError, TypeError) as e:
+            logger.debug(
+                f"Could not parse outcome_prices for market {market.id}: {e}"
+            )
+            return None
+
+        # Find outcome with price closest to 1.0 (winner)
+        # In Polymarket, winning outcome resolves to ~1.0, losers to ~0.0
+        winning_idx = None
+        max_price = -1.0
+
+        for idx, price in enumerate(prices):
+            if price > max_price:
+                max_price = price
+                winning_idx = idx
+
+        # Sanity check: winner should have price > 0.5
+        if winning_idx is not None and max_price > 0.5:
+            return winning_idx
+
+        return None
 
     def process_market(self, market: Market) -> pd.DataFrame | None:
         """Process all tokens for a single market.
@@ -214,11 +266,23 @@ class MarketDataProcessor:
             logger.debug(f"No token IDs for market {market.id}")
             return None
 
+        # Determine winning outcome for resolved markets
+        winning_outcome_idx = self._determine_winning_outcome(market)
+
         market_dfs = []
 
         for idx, token_id in enumerate(token_ids):
             df = self.process_token_data(market, token_id, idx)
             if df is not None:
+                # Add target variable: 1 if this token won, 0 otherwise
+                # Only add target for resolved markets with known winner
+                if winning_outcome_idx is not None:
+                    df["won"] = (idx == winning_outcome_idx).astype(int)
+                else:
+                    # For unresolved markets or markets without outcome_prices,
+                    # set won to None (will be filtered out later)
+                    df["won"] = None
+
                 market_dfs.append(df)
 
         if not market_dfs:
@@ -229,7 +293,8 @@ class MarketDataProcessor:
 
         logger.debug(
             f"Processed market {market.id}: "
-            f"{len(token_ids)} tokens, {len(combined)} rows"
+            f"{len(token_ids)} tokens, {len(combined)} rows, "
+            f"winner_idx={winning_outcome_idx}"
         )
 
         return combined
@@ -274,12 +339,54 @@ class MarketDataProcessor:
         # Combine all markets
         combined = pd.concat(all_dfs, ignore_index=True)
 
+        # Filter to only include resolved markets with known winners
+        # (i.e., rows where 'won' is not None)
+        initial_rows = len(combined)
+        combined = combined[combined["won"].notna()].copy()
+        filtered_rows = len(combined)
+
+        if filtered_rows < initial_rows:
+            logger.info(
+                f"Filtered out {initial_rows - filtered_rows} rows "
+                f"from unresolved markets or markets without outcome_prices"
+            )
+
+        if combined.empty:
+            raise ValueError(
+                "No resolved market data with known winners to process. "
+                "Ensure markets are closed and have outcome_prices."
+            )
+
         # Sort by timestamp
         combined = combined.sort_values("timestamp")
 
+        # Ensure won column is integer type (0 or 1)
+        combined["won"] = combined["won"].astype(int)
+
+        # Data quality checks
         logger.info(
             f"Combined dataset: {len(combined)} rows, {len(combined.columns)} columns"
         )
+
+        # Log target variable distribution
+        if "won" in combined.columns:
+            win_counts = combined["won"].value_counts()
+            logger.info(
+                f"Target variable distribution: "
+                f"Won={win_counts.get(1, 0)}, Lost={win_counts.get(0, 0)}"
+            )
+
+        # Check for missing values in critical columns
+        critical_cols = ["price", "timestamp", "market_id", "won"]
+        missing_info = {}
+        for col in critical_cols:
+            if col in combined.columns:
+                missing_count = combined[col].isna().sum()
+                if missing_count > 0:
+                    missing_info[col] = missing_count
+
+        if missing_info:
+            logger.warning(f"Missing values in critical columns: {missing_info}")
 
         return combined
 
