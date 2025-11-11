@@ -4,12 +4,15 @@
 This script reads the markets.json file from step 1, extracts token IDs,
 and fetches time-series price data for each token from the CLOB API.
 
-Usage:
-    # Using interval (default)
-    python scripts/02_fetch_history.py
-    python scripts/02_fetch_history.py --interval 1d
+By default, uses start/end timestamps derived from market metadata (createdAt,
+gameStartTime, closedTime, endDate). This ensures we fetch the full price
+history for each market's lifecycle.
 
-    # Using timestamp range
+Usage:
+    # Using market metadata timestamps (default)
+    python scripts/02_fetch_history.py
+
+    # Override with custom timestamp range
     python scripts/02_fetch_history.py --start-ts 1698700000 --end-ts 1698800000
 
     # Testing with limited tokens
@@ -105,6 +108,59 @@ def extract_token_ids(markets: list[Market]) -> list[str]:
     return unique_ids
 
 
+def build_token_time_ranges(markets: list[Market]) -> dict[str, tuple[int, int]]:
+    """Build a mapping of token_id -> (start_ts, end_ts) from market metadata.
+
+    For each market, extracts its time range and associates it with all tokens
+    belonging to that market. If a token appears in multiple markets, uses the
+    earliest start and latest end across all markets.
+
+    Args:
+        markets: List of Market objects
+
+    Returns:
+        Dictionary mapping token_id to (start_ts, end_ts) tuple
+    """
+    token_ranges: dict[str, tuple[int, int]] = {}
+    markets_with_ranges = 0
+    markets_without_ranges = 0
+
+    for market in markets:
+        time_range = market.get_time_range()
+        if time_range is None:
+            markets_without_ranges += 1
+            logger.debug(
+                f"Market {market.id or market.slug or 'unknown'}: "
+                "could not determine time range"
+            )
+            continue
+
+        markets_with_ranges += 1
+        start_ts, end_ts = time_range
+        token_ids = market.get_token_ids()
+
+        for token_id in token_ids:
+            if not token_id:
+                continue
+
+            if token_id in token_ranges:
+                # Token appears in multiple markets - expand range
+                prev_start, prev_end = token_ranges[token_id]
+                token_ranges[token_id] = (
+                    min(prev_start, start_ts),
+                    max(prev_end, end_ts),
+                )
+            else:
+                token_ranges[token_id] = (start_ts, end_ts)
+
+    logger.info(
+        f"Built time ranges for {len(token_ranges)} tokens from "
+        f"{markets_with_ranges} markets (skipped {markets_without_ranges} markets)"
+    )
+
+    return token_ranges
+
+
 def main() -> None:
     """Main entry point for price history fetching script."""
     parser = argparse.ArgumentParser(
@@ -124,26 +180,21 @@ def main() -> None:
         help="Output directory for price history JSON files",
     )
 
-    # Time range options (mutually exclusive: interval OR start/end timestamps)
-    time_group = parser.add_argument_group("time range (choose one method)")
-    time_group.add_argument(
-        "--interval",
-        type=str,
-        default=None,
-        choices=["1m", "1h", "6h", "1d", "1w", "max"],
-        help="Price data interval (e.g., 1h). Mutually exclusive with --start-ts/--end-ts",
-    )
+    # Time range options
+    time_group = parser.add_argument_group("time range")
     time_group.add_argument(
         "--start-ts",
         type=int,
         default=None,
-        help="Start timestamp (unix seconds). Requires --end-ts. Mutually exclusive with --interval",
+        help="Override start timestamp (unix seconds) for all tokens. "
+        "By default, uses timestamps from market metadata.",
     )
     time_group.add_argument(
         "--end-ts",
         type=int,
         default=None,
-        help="End timestamp (unix seconds). Requires --start-ts. Mutually exclusive with --interval",
+        help="Override end timestamp (unix seconds) for all tokens. "
+        "By default, uses timestamps from market metadata.",
     )
 
     parser.add_argument(
@@ -156,19 +207,13 @@ def main() -> None:
     args = parser.parse_args()
 
     # Validate time range arguments
-    has_interval = args.interval is not None
-    has_timestamps = args.start_ts is not None or args.end_ts is not None
+    has_start = args.start_ts is not None
+    has_end = args.end_ts is not None
 
-    if has_interval and has_timestamps:
-        parser.error("Cannot use both --interval and --start-ts/--end-ts")
-
-    if has_timestamps and (args.start_ts is None or args.end_ts is None):
+    if has_start ^ has_end:
         parser.error("Both --start-ts and --end-ts must be provided together")
 
-    # Default to 1h interval if nothing specified
-    if not has_interval and not has_timestamps:
-        args.interval = "1h"
-        logger.info("No time range specified, defaulting to --interval 1h")
+    use_override_range = has_start and has_end
 
     # Validate input file exists
     if not args.markets.exists():
@@ -183,10 +228,12 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info(f"Markets file: {args.markets}")
     logger.info(f"Output directory: {args.output}")
-    if args.interval:
-        logger.info(f"Interval: {args.interval}")
+    if use_override_range:
+        logger.info(
+            f"Using override time range: {args.start_ts} to {args.end_ts} (unix seconds)"
+        )
     else:
-        logger.info(f"Time range: {args.start_ts} to {args.end_ts} (unix seconds)")
+        logger.info("Using time ranges from market metadata")
     if args.max_tokens:
         logger.info(f"Max tokens (testing): {args.max_tokens}")
     logger.info("=" * 60)
@@ -206,10 +253,39 @@ def main() -> None:
             logger.warning("No token IDs found in markets")
             sys.exit(0)
 
+        # Build per-token time ranges from market metadata
+        token_time_ranges = None
+        if not use_override_range:
+            token_time_ranges = build_token_time_ranges(markets)
+
+            # Filter to only tokens we're fetching
+            token_time_ranges = {
+                tid: token_time_ranges[tid]
+                for tid in token_ids
+                if tid in token_time_ranges
+            }
+
+            if token_time_ranges:
+                logger.info(
+                    f"Using per-token time ranges for {len(token_time_ranges)}/{len(token_ids)} tokens"
+                )
+            else:
+                logger.warning(
+                    "No time ranges available from market metadata. "
+                    "You may need to provide --start-ts and --end-ts."
+                )
+
         # Limit tokens if requested (for testing)
         if args.max_tokens:
             token_ids = token_ids[: args.max_tokens]
             logger.info(f"Limited to {len(token_ids)} tokens for testing")
+            # Also limit token_time_ranges if present
+            if token_time_ranges:
+                token_time_ranges = {
+                    tid: token_time_ranges[tid]
+                    for tid in token_ids
+                    if tid in token_time_ranges
+                }
 
         # Fetch price histories
         logger.info(f"\nFetching price history for {len(token_ids)} tokens...")
@@ -218,7 +294,7 @@ def main() -> None:
             output_dir=args.output,
             start_ts=args.start_ts,
             end_ts=args.end_ts,
-            interval=args.interval,
+            token_time_ranges=token_time_ranges,
         )
 
         logger.info("=" * 60)

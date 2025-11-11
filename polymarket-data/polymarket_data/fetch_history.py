@@ -14,6 +14,11 @@ from polymarket_data.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Maximum chunk size for API requests (15 days in seconds)
+# The API has limits on how long a time range can be
+MAX_CHUNK_SECONDS = 60 * 60 * 24 * 15  # 15 days
+MIN_CHUNK_SECONDS = 60 * 60  # 1 hour minimum
+
 
 class PricePoint(BaseModel):
     """Single price observation for a token."""
@@ -105,85 +110,202 @@ class PriceHistoryFetcher:
             httpx.HTTPStatusError: If request fails
             ValueError: If invalid parameter combination
         """
-        # Build query params - use "market" as documented
-        params: dict[str, Any] = {"market": token_id}
-
-        # Validate and add time parameters
+        # If using interval, fetch directly
         if interval is not None:
-            # Using interval - ignore start/end
             valid_intervals = ["1m", "1h", "6h", "1d", "1w", "max"]
             if interval not in valid_intervals:
                 raise ValueError(
                     f"Invalid interval '{interval}'. "
                     f"Must be one of: {valid_intervals}"
                 )
-            params["interval"] = interval
             if start_ts is not None or end_ts is not None:
                 logger.warning(
                     "Both interval and start_ts/end_ts provided. "
                     "Using interval only (per API docs)."
                 )
-        elif start_ts is not None and end_ts is not None:
-            # Using start/end timestamps
-            params["startTs"] = start_ts
-            params["endTs"] = end_ts
-        elif start_ts is not None or end_ts is not None:
-            raise ValueError("Both start_ts and end_ts must be provided together")
-        else:
-            # No time params - API will return some default range
-            logger.debug(f"Fetching all available history for token {token_id}")
+            return self._fetch_with_interval(token_id, interval)
 
+        # If using timestamps, use chunking logic
+        if start_ts is not None and end_ts is not None:
+            if end_ts <= start_ts:
+                raise ValueError("end_ts must be greater than start_ts")
+            return self._fetch_with_timestamps_chunked(token_id, start_ts, end_ts)
+
+        if start_ts is not None or end_ts is not None:
+            raise ValueError("Both start_ts and end_ts must be provided together")
+
+        # No time params - API will return some default range
+        logger.debug(f"Fetching all available history for token {token_id}")
+        return self._fetch_with_interval(token_id, "max")
+
+    def _fetch_with_interval(
+        self, token_id: str, interval: str
+    ) -> TokenPriceHistory:
+        """Fetch history using interval parameter."""
+        params: dict[str, Any] = {"market": token_id, "interval": interval}
         logger.debug(f"Fetching price history for token {token_id}: params={params}")
 
         try:
-            # Use query params, not path segment
             response = self.client.get(
                 settings.clob_price_history_url,
                 params=params,
             )
             response.raise_for_status()
-
-            # Rate limiting
             time.sleep(settings.rate_limit_delay)
-
-            # Parse response
             data = response.json()
-
-            # Handle response format
-            if isinstance(data, dict) and "history" in data:
-                # Expected format per docs: {"history": [...]}
-                history = [
-                    PricePoint.model_validate(point) for point in data["history"]
-                ]
-            elif isinstance(data, list):
-                # Alternative format (if API returns bare list)
-                logger.info(
-                    f"Got bare list response for token {token_id} "
-                    "(expected dict with 'history' key)"
-                )
-                history = [PricePoint.model_validate(point) for point in data]
-            else:
-                logger.warning(
-                    f"Unexpected response format for token {token_id}: {type(data)}"
-                )
-                history = []
-
+            history = self._parse_history_response(token_id, data)
             return TokenPriceHistory(token_id=token_id, history=history)
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 logger.warning(f"No price history found for token {token_id}")
                 return TokenPriceHistory(token_id=token_id, history=[])
-            else:
-                logger.error(
-                    f"HTTP error fetching token {token_id}: "
-                    f"{e.response.status_code} - {e.response.text}"
-                )
+            raise
+
+    def _fetch_with_timestamps_chunked(
+        self, token_id: str, start_ts: int, end_ts: int
+    ) -> TokenPriceHistory:
+        """Fetch history using timestamps with automatic chunking for long ranges."""
+        duration = end_ts - start_ts
+
+        # If range is small enough, try direct fetch
+        if duration <= MAX_CHUNK_SECONDS:
+            try:
+                return self._fetch_chunk(token_id, start_ts, end_ts)
+            except httpx.HTTPStatusError as e:
+                if self._is_interval_too_long_error(e):
+                    # Even though range is small, API rejected it - split further
+                    logger.debug(
+                        f"API rejected range {start_ts}-{end_ts} for token {token_id}, "
+                        "splitting into smaller chunks"
+                    )
+                    return self._fetch_chunked_recursive(token_id, start_ts, end_ts)
                 raise
 
-        except Exception as e:
-            logger.error(f"Error fetching price history for token {token_id}: {e}")
-            raise
+        # Range is too long - split into chunks
+        logger.debug(
+            f"Range {start_ts}-{end_ts} ({duration} seconds) exceeds max chunk size "
+            f"({MAX_CHUNK_SECONDS} seconds), splitting into chunks"
+        )
+        return self._fetch_chunked_recursive(token_id, start_ts, end_ts)
+
+    def _fetch_chunked_recursive(
+        self, token_id: str, start_ts: int, end_ts: int
+    ) -> TokenPriceHistory:
+        """Recursively fetch history by splitting into smaller chunks."""
+        all_points: list[PricePoint] = []
+        current_start = start_ts
+
+        while current_start < end_ts:
+            current_end = min(current_start + MAX_CHUNK_SECONDS, end_ts)
+
+            try:
+                chunk_points = self._fetch_chunk(token_id, current_start, current_end)
+                all_points.extend(chunk_points)
+                current_start = current_end
+            except httpx.HTTPStatusError as e:
+                if self._is_interval_too_long_error(e):
+                    # Chunk is still too long - split it in half
+                    duration = current_end - current_start
+                    if duration <= MIN_CHUNK_SECONDS:
+                        logger.error(
+                            f"Cannot split range {current_start}-{current_end} "
+                            f"further (duration {duration}s <= min {MIN_CHUNK_SECONDS}s)"
+                        )
+                        raise
+
+                    midpoint = current_start + (duration // 2)
+                    logger.debug(
+                        f"Splitting chunk {current_start}-{current_end} at {midpoint}"
+                    )
+                    # Recursively fetch both halves
+                    first_half = self._fetch_chunked_recursive(
+                        token_id, current_start, midpoint
+                    )
+                    second_half = self._fetch_chunked_recursive(
+                        token_id, midpoint, current_end
+                    )
+                    all_points.extend(first_half.history)
+                    all_points.extend(second_half.history)
+                    current_start = current_end
+                else:
+                    raise
+
+        # Deduplicate and sort by timestamp
+        unique_points = self._deduplicate_points(all_points)
+        return TokenPriceHistory(token_id=token_id, history=unique_points)
+
+    def _fetch_chunk(
+        self, token_id: str, start_ts: int, end_ts: int
+    ) -> list[PricePoint]:
+        """Fetch a single chunk of price history."""
+        params: dict[str, Any] = {
+            "market": token_id,
+            "startTs": start_ts,
+            "endTs": end_ts,
+        }
+        logger.debug(
+            f"Fetching chunk for token {token_id}: {start_ts} to {end_ts} "
+            f"({end_ts - start_ts} seconds)"
+        )
+
+        response = self.client.get(
+            settings.clob_price_history_url,
+            params=params,
+        )
+
+        if response.status_code == 404:
+            logger.debug(
+                f"Token {token_id} returned 404 for range {start_ts}-{end_ts}"
+            )
+            time.sleep(settings.rate_limit_delay)
+            return []
+
+        response.raise_for_status()
+        time.sleep(settings.rate_limit_delay)
+        data = response.json()
+        return self._parse_history_response(token_id, data)
+
+    def _parse_history_response(
+        self, token_id: str, data: Any
+    ) -> list[PricePoint]:
+        """Parse API response into PricePoint list."""
+        if isinstance(data, dict) and "history" in data:
+            payload = data.get("history") or []
+        elif isinstance(data, list):
+            logger.info(
+                f"Got bare list response for token {token_id} "
+                "(expected dict with 'history' key)"
+            )
+            payload = data
+        else:
+            logger.warning(
+                f"Unexpected response format for token {token_id}: {type(data)}"
+            )
+            return []
+
+        return [PricePoint.model_validate(point) for point in payload]
+
+    def _is_interval_too_long_error(self, error: httpx.HTTPStatusError) -> bool:
+        """Check if error indicates the time interval is too long."""
+        if error.response is None or error.response.status_code != 400:
+            return False
+
+        try:
+            error_text = error.response.text.lower()
+            return "interval is too long" in error_text or "startts and endts interval is too long" in error_text
+        except Exception:
+            return False
+
+    def _deduplicate_points(self, points: list[PricePoint]) -> list[PricePoint]:
+        """Remove duplicate timestamps and sort by timestamp."""
+        # Use dict to keep last point for each timestamp
+        unique: dict[int, PricePoint] = {}
+        for point in points:
+            unique[point.t] = point
+
+        # Sort by timestamp
+        return [unique[ts] for ts in sorted(unique.keys())]
 
     def fetch_multiple_tokens(
         self,
@@ -191,30 +313,53 @@ class PriceHistoryFetcher:
         start_ts: int | None = None,
         end_ts: int | None = None,
         interval: str | None = None,
+        token_time_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> list[TokenPriceHistory]:
         """Fetch price history for multiple tokens.
 
         Args:
             token_ids: List of token IDs to fetch
-            start_ts: Start timestamp (unix seconds)
-            end_ts: End timestamp (unix seconds)
-            interval: Price interval (mutually exclusive with start_ts/end_ts)
+            start_ts: Default start timestamp (unix seconds) for tokens without
+                an explicit range in token_time_ranges
+            end_ts: Default end timestamp (unix seconds) for tokens without
+                an explicit range in token_time_ranges
+            interval: Price interval (mutually exclusive with start_ts/end_ts).
+                Only used if no timestamps provided.
+            token_time_ranges: Optional per-token (start_ts, end_ts) overrides.
+                Takes precedence over start_ts/end_ts.
 
         Returns:
             List of TokenPriceHistory objects
         """
         results: list[TokenPriceHistory] = []
 
-        logger.info(f"Fetching price history for {len(token_ids)} tokens")
+        if token_time_ranges:
+            logger.info(
+                f"Fetching price history for {len(token_ids)} tokens "
+                f"with per-token time ranges"
+            )
+        else:
+            logger.info(f"Fetching price history for {len(token_ids)} tokens")
 
         for i, token_id in enumerate(token_ids, 1):
             logger.info(f"Fetching token {i}/{len(token_ids)}: {token_id}")
 
+            # Determine time range for this token
+            token_start_ts = start_ts
+            token_end_ts = end_ts
+
+            if token_time_ranges and token_id in token_time_ranges:
+                token_start_ts, token_end_ts = token_time_ranges[token_id]
+                logger.debug(
+                    f"Using per-token range for {token_id}: "
+                    f"{token_start_ts} to {token_end_ts}"
+                )
+
             try:
                 history = self.fetch_token_history(
                     token_id=token_id,
-                    start_ts=start_ts,
-                    end_ts=end_ts,
+                    start_ts=token_start_ts,
+                    end_ts=token_end_ts,
                     interval=interval,
                 )
                 results.append(history)
@@ -269,6 +414,7 @@ def fetch_market_price_histories(
     start_ts: int | None = None,
     end_ts: int | None = None,
     interval: str | None = None,
+    token_time_ranges: dict[str, tuple[int, int]] | None = None,
 ) -> list[TokenPriceHistory]:
     """Fetch price histories for market tokens.
 
@@ -277,11 +423,14 @@ def fetch_market_price_histories(
     Args:
         token_ids: List of token IDs (called "market" in CLOB API)
         output_dir: Optional directory to save price histories
-        start_ts: Start timestamp (unix seconds, requires end_ts)
-        end_ts: End timestamp (unix seconds, requires start_ts)
+        start_ts: Default start timestamp (unix seconds) for tokens without
+            an explicit range in token_time_ranges
+        end_ts: Default end timestamp (unix seconds) for tokens without
+            an explicit range in token_time_ranges
         interval: Price interval from: 1m, 1h, 6h, 1d, 1w, max.
-                 Mutually exclusive with start_ts/end_ts.
-                 If None and no timestamps, API returns default range.
+                 Only used if no timestamps provided.
+        token_time_ranges: Optional per-token (start_ts, end_ts) overrides.
+            Takes precedence over start_ts/end_ts.
 
     Returns:
         List of TokenPriceHistory objects
@@ -292,6 +441,7 @@ def fetch_market_price_histories(
             start_ts=start_ts,
             end_ts=end_ts,
             interval=interval,
+            token_time_ranges=token_time_ranges,
         )
 
         # Save if output directory provided

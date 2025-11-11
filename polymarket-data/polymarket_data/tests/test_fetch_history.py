@@ -81,9 +81,10 @@ class TestPriceHistoryFetcher:
         """Create a mock httpx client."""
         return Mock(spec=httpx.Client)
 
-    def test_fetch_token_history_with_interval(self, mock_client: Mock) -> None:
-        """Test fetching token history with interval parameter."""
+    def test_fetch_token_history_basic(self, mock_client: Mock) -> None:
+        """Test fetching token history with explicit time range."""
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "history": [
                 {"t": 1698764400, "p": 0.60},
@@ -95,7 +96,9 @@ class TestPriceHistoryFetcher:
         with patch("time.sleep"):
             fetcher = PriceHistoryFetcher(client=mock_client)
             result = fetcher.fetch_token_history(
-                token_id="token123", interval="1h"
+                token_id="token123",
+                start_ts=1698700000,
+                end_ts=1698800000,
             )
 
         assert result.token_id == "token123"
@@ -105,13 +108,15 @@ class TestPriceHistoryFetcher:
         # Verify request params
         call_kwargs = mock_client.get.call_args[1]
         assert call_kwargs["params"]["market"] == "token123"
-        assert call_kwargs["params"]["interval"] == "1h"
+        assert call_kwargs["params"]["startTs"] == 1698700000
+        assert call_kwargs["params"]["endTs"] == 1698800000
 
     def test_fetch_token_history_with_timestamps(
         self, mock_client: Mock
     ) -> None:
         """Test fetching token history with start/end timestamps."""
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {"history": [{"t": 1698764400, "p": 0.60}]}
         mock_client.get.return_value = mock_response
 
@@ -132,21 +137,12 @@ class TestPriceHistoryFetcher:
         assert call_kwargs["params"]["endTs"] == 1698800000
         assert "interval" not in call_kwargs["params"]
 
-    def test_fetch_token_history_invalid_interval(
-        self, mock_client: Mock
-    ) -> None:
-        """Test that invalid interval raises ValueError."""
-        fetcher = PriceHistoryFetcher(client=mock_client)
-
-        with pytest.raises(ValueError, match="Invalid interval"):
-            fetcher.fetch_token_history(token_id="token123", interval="15min")
-
     def test_fetch_token_history_missing_end_ts(self, mock_client: Mock) -> None:
         """Test that providing only start_ts raises ValueError."""
         fetcher = PriceHistoryFetcher(client=mock_client)
 
         with pytest.raises(
-            ValueError, match="Both start_ts and end_ts must be provided"
+            ValueError, match="start_ts and end_ts must be provided together"
         ):
             fetcher.fetch_token_history(token_id="token123", start_ts=1698700000)
 
@@ -154,15 +150,14 @@ class TestPriceHistoryFetcher:
         """Test handling of 404 response (no data for token)."""
         mock_response = Mock()
         mock_response.status_code = 404
-        error = httpx.HTTPStatusError(
-            "Not found", request=Mock(), response=mock_response
-        )
-        mock_client.get.side_effect = error
+        mock_client.get.return_value = mock_response
 
         with patch("time.sleep"):
             fetcher = PriceHistoryFetcher(client=mock_client)
             result = fetcher.fetch_token_history(
-                token_id="nonexistent", interval="1h"
+                token_id="nonexistent",
+                start_ts=1698700000,
+                end_ts=1698800000,
             )
 
         # Should return empty history instead of raising
@@ -174,6 +169,7 @@ class TestPriceHistoryFetcher:
     ) -> None:
         """Test handling of bare list response (alternative format)."""
         mock_response = Mock()
+        mock_response.status_code = 200
         # Return bare list instead of dict with "history"
         mock_response.json.return_value = [
             {"t": 1698764400, "p": 0.60},
@@ -184,7 +180,9 @@ class TestPriceHistoryFetcher:
         with patch("time.sleep"):
             fetcher = PriceHistoryFetcher(client=mock_client)
             result = fetcher.fetch_token_history(
-                token_id="token123", interval="1h"
+                token_id="token123",
+                start_ts=1698700000,
+                end_ts=1698800000,
             )
 
         # Should still parse correctly
@@ -204,13 +202,16 @@ class TestPriceHistoryFetcher:
             }
 
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.json.side_effect = mock_response_json
         mock_client.get.return_value = mock_response
 
         with patch("time.sleep"):
             fetcher = PriceHistoryFetcher(client=mock_client)
             results = fetcher.fetch_multiple_tokens(
-                token_ids=["token1", "token2"], interval="1h"
+                token_ids=["token1", "token2"],
+                start_ts=1698700000,
+                end_ts=1698800000,
             )
 
         assert len(results) == 2
@@ -218,6 +219,80 @@ class TestPriceHistoryFetcher:
         assert results[1].token_id == "token2"
         assert results[0].history[0].p == 0.60
         assert results[1].history[0].p == 0.70
+
+    def test_fetch_multiple_tokens_with_per_token_ranges(
+        self, mock_client: Mock
+    ) -> None:
+        """Ensure per-token ranges override the shared range for each request."""
+        captured_params: list[dict[str, Any]] = []
+
+        def mock_get(url: str, params: dict[str, Any]) -> Mock:
+            captured_params.append(params)
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"history": []}
+            return mock_response
+
+        mock_client.get.side_effect = mock_get
+
+        token_ranges = {"token1": (10, 20), "token2": (30, 40)}
+
+        with patch("time.sleep"):
+            fetcher = PriceHistoryFetcher(client=mock_client)
+            fetcher.fetch_multiple_tokens(
+                token_ids=["token1", "token2"],
+                start_ts=1,
+                end_ts=2,
+                token_time_ranges=token_ranges,
+            )
+
+        assert len(captured_params) == 2
+        assert captured_params[0]["startTs"] == 10
+        assert captured_params[0]["endTs"] == 20
+        assert captured_params[1]["startTs"] == 30
+        assert captured_params[1]["endTs"] == 40
+
+    def test_fetch_token_history_splits_long_range(self, mock_client: Mock) -> None:
+        """Verify that long ranges are automatically split into smaller chunks."""
+        spans: list[tuple[int, int]] = []
+
+        def mock_get(url: str, params: dict[str, Any]) -> Mock:
+            spans.append((params["startTs"], params["endTs"]))
+            duration = params["endTs"] - params["startTs"]
+
+            if duration > 5:
+                request = httpx.Request("GET", url)
+                response = httpx.Response(
+                    400,
+                    request=request,
+                    content=b"startTs and endTs interval is too long",
+                )
+                raise httpx.HTTPStatusError("Bad Request", request=request, response=response)
+
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "history": [{"t": params["startTs"], "p": 0.5}]
+            }
+            return mock_response
+
+        mock_client.get.side_effect = mock_get
+
+        with patch("time.sleep"):
+            fetcher = PriceHistoryFetcher(
+                client=mock_client,
+                max_chunk_seconds=10,
+                min_chunk_seconds=2,
+            )
+            result = fetcher.fetch_token_history(
+                token_id="token123",
+                start_ts=0,
+                end_ts=20,
+            )
+
+        # Ensure multiple spans were attempted and the result contains merged data
+        assert len(spans) > 2
+        assert [point.t for point in result.history] == [0, 5, 10, 15]
 
     def test_fetch_multiple_tokens_with_errors(
         self, mock_client: Mock
@@ -229,6 +304,7 @@ class TestPriceHistoryFetcher:
             if token_id == "bad_token":
                 raise Exception("Network error")
             mock_response = Mock()
+            mock_response.status_code = 200
             mock_response.json.return_value = {"history": [{"t": 1698764400, "p": 0.60}]}
             return mock_response
 
@@ -237,7 +313,9 @@ class TestPriceHistoryFetcher:
         with patch("time.sleep"):
             fetcher = PriceHistoryFetcher(client=mock_client)
             results = fetcher.fetch_multiple_tokens(
-                token_ids=["good_token", "bad_token", "another_good"], interval="1h"
+                token_ids=["good_token", "bad_token", "another_good"],
+                start_ts=1698700000,
+                end_ts=1698800000,
             )
 
         # Should have 2 successful results, bad_token skipped

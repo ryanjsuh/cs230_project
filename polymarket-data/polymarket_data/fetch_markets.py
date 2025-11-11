@@ -206,6 +206,95 @@ class Market(BaseModel):
 
         return ids
 
+    def _parse_iso_datetime(self, value: str | None) -> datetime | None:
+        """Parse an ISO timestamp string into a timezone-aware UTC datetime.
+
+        Args:
+            value: ISO timestamp string (may include 'Z' or timezone offset)
+
+        Returns:
+            Datetime object in UTC, or None if parsing fails
+        """
+        if not value:
+            return None
+
+        try:
+            # Normalize 'Z' to '+00:00' for fromisoformat
+            normalized = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+        except (ValueError, AttributeError) as e:
+            logger.debug(f"Failed to parse timestamp '{value}': {e}")
+            return None
+
+        # Ensure timezone-aware (assume UTC if naive)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        # Convert to UTC
+        return dt.astimezone(timezone.utc)
+
+    def get_start_ts(self) -> int | None:
+        """Get start timestamp (unix seconds) for price history fetching.
+
+        Uses gameStartTime if available, otherwise falls back to createdAt.
+        This represents when the market/event started, which is the best
+        starting point for price history.
+
+        Returns:
+            Unix timestamp in seconds, or None if no start time available
+        """
+        # Prefer gameStartTime (event start) over createdAt (market creation)
+        start_dt = self._parse_iso_datetime(self.game_start_time)
+        if start_dt is None:
+            start_dt = self._parse_iso_datetime(self.created_at)
+
+        if start_dt is None:
+            return None
+
+        return int(start_dt.timestamp())
+
+    def get_end_ts(self) -> int | None:
+        """Get end timestamp (unix seconds) for price history fetching.
+
+        Uses closedTime if available (when market actually closed/resolved),
+        otherwise falls back to endDate (scheduled end time).
+
+        Returns:
+            Unix timestamp in seconds, or None if no end time available
+        """
+        # Prefer closedTime (actual resolution) over endDate (scheduled end)
+        end_dt = self._parse_iso_datetime(self.closed_time)
+        if end_dt is None:
+            end_dt = self._parse_iso_datetime(self.end_date)
+
+        if end_dt is None:
+            return None
+
+        return int(end_dt.timestamp())
+
+    def get_time_range(self) -> tuple[int, int] | None:
+        """Get start and end timestamps as a tuple for price history fetching.
+
+        Returns:
+            Tuple of (start_ts, end_ts) in unix seconds, or None if either
+            timestamp cannot be determined
+        """
+        start_ts = self.get_start_ts()
+        end_ts = self.get_end_ts()
+
+        if start_ts is None or end_ts is None:
+            return None
+
+        # Ensure end_ts > start_ts (should always be true, but be safe)
+        if end_ts <= start_ts:
+            logger.warning(
+                f"Market {self.id}: end_ts ({end_ts}) <= start_ts ({start_ts}), "
+                "adjusting end_ts to be 1 second after start_ts"
+            )
+            end_ts = start_ts + 1
+
+        return (start_ts, end_ts)
+
 
 class MarketFetcher:
     """Fetches markets from Polymarket Gamma API with pagination.
