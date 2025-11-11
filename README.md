@@ -4,8 +4,9 @@ A foundation model for zero-shot prediction market forecasting. A CS 230 project
 
 ## Getting Started
 
+For data processing, run the following:
+
 ```bash
-# for data processing, run the following:
 cd polymarket-data
 
 python -m venv venv
@@ -13,9 +14,17 @@ source venv/bin/activate
 
 pip install -r requirements-dev.txt
 
+# run scripts in this order
 python scripts/01_fetch_markets.py
 python scripts/02_fetch_history.py
 python scripts/03_clean_all.py
+```
+
+To run the baseline, open and run all cells in the Google Colab:
+
+```bash
+# go into baseline-model directory, and run the cells in:
+baseline.ipynb
 ```
 
 ## Background
