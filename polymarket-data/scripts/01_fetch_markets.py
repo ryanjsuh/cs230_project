@@ -51,13 +51,21 @@ def main() -> None:
         default=None,
         help="Maximum number of markets to fetch (for testing)",
     )
+    parser.add_argument(
+        "--all-markets",
+        action="store_true",
+        help="Fetch ALL resolved markets (ignores lookback-days)",
+    )
 
     args = parser.parse_args()
 
     logger.info("=" * 60)
     logger.info("Polymarket Market Fetcher")
     logger.info("=" * 60)
-    logger.info(f"Lookback days: {args.lookback_days}")
+    if args.all_markets:
+        logger.info("Mode: Fetching ALL resolved markets (no date filter)")
+    else:
+        logger.info(f"Lookback days: {args.lookback_days}")
     logger.info(f"Output path: {args.output}")
     if args.max_markets:
         logger.info(f"Max markets (testing): {args.max_markets}")
@@ -65,9 +73,10 @@ def main() -> None:
 
     try:
         markets = fetch_resolved_markets(
-            lookback_days=args.lookback_days,
+            lookback_days=None if args.all_markets else args.lookback_days,
             output_path=args.output,
             max_markets=args.max_markets,
+            fetch_all=args.all_markets,
         )
 
         logger.info("=" * 60)

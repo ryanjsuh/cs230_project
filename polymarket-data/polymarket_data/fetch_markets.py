@@ -355,14 +355,39 @@ def fetch_resolved_markets(
     lookback_days: int | None = None,
     output_path: Path | str | None = None,
     max_markets: int | None = None,
+    fetch_all: bool = False,
 ) -> list[Market]:
+    if fetch_all:
+        logger.info("Fetching ALL closed markets (no date filter)")
+        
+        with MarketFetcher() as fetcher:
+            all_markets = fetcher.fetch_all_markets(
+                closed=True,
+                max_markets=max_markets,
+            )
+            
+            logger.info(
+                f"Fetched {len(all_markets)} closed markets from API"
+            )
+            
+            if output_path:
+                fetcher.save_markets(all_markets, output_path)
+            
+            return all_markets
+    
+    # Normal mode: filter by lookback period
     if lookback_days is None:
         lookback_days = settings.lookback_days
 
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    end_date_min = cutoff_date.strftime("%Y-%m-%d")
+    
+    extended_cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days * 2)
+    end_date_min = extended_cutoff.strftime("%Y-%m-%d")
 
-    logger.info(f"Fetching markets with end_date >= {end_date_min}")
+    logger.info(
+        f"Fetching closed markets with endDate >= {end_date_min}, "
+        f"then filtering by closedTime >= {cutoff_date.strftime('%Y-%m-%d')} (actual close date)"
+    )
 
     with MarketFetcher() as fetcher:
         all_markets = fetcher.fetch_all_markets(
@@ -372,6 +397,11 @@ def fetch_resolved_markets(
         )
 
         filtered_markets = fetcher.filter_by_closed_date(all_markets, lookback_days)
+
+        logger.info(
+            f"Fetched {len(all_markets)} closed markets from API, "
+            f"filtered to {len(filtered_markets)} markets closed within {lookback_days} days"
+        )
 
         if output_path:
             fetcher.save_markets(filtered_markets, output_path)
