@@ -4,6 +4,7 @@ Fetch price history from Polymarket CLOB API
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,7 +141,8 @@ class PriceHistoryFetcher:
 
         if duration <= MAX_CHUNK_SECONDS:
             try:
-                return self._fetch_chunk(token_id, start_ts, end_ts)
+                points = self._fetch_chunk(token_id, start_ts, end_ts)
+                return TokenPriceHistory(token_id=token_id, history=points)
             except httpx.HTTPStatusError as e:
                 if self._is_interval_too_long_error(e):
                     logger.debug(
@@ -277,8 +279,39 @@ class PriceHistoryFetcher:
         end_ts: int | None = None,
         interval: str | None = None,
         token_time_ranges: dict[str, tuple[int, int]] | None = None,
+        output_dir: Path | str | None = None,
+        resume: bool = True,
     ) -> list[TokenPriceHistory]:
         results: list[TokenPriceHistory] = []
+        
+        # Track which tokens already have files
+        existing_files: set[str] = set()
+        if resume and output_dir:
+            output_path = Path(output_dir)
+            if output_path.exists():
+                # Check for both completed files and temp files
+                existing_files = {
+                    f.stem for f in output_path.glob("*.json")
+                    if not f.name.endswith(".tmp")
+                }
+                # Clean up
+                temp_files = list(output_path.glob("*.json.tmp"))
+                if temp_files:
+                    logger.info(
+                        f"Found {len(temp_files)} leftover temp files from previous run. "
+                        "Cleaning up..."
+                    )
+                    for temp_file in temp_files:
+                        try:
+                            temp_file.unlink()
+                        except Exception as e:
+                            logger.warning(f"Failed to remove temp file {temp_file}: {e}")
+                
+                if existing_files:
+                    logger.info(
+                        f"Found {len(existing_files)} existing price history files. "
+                        "Skipping already-fetched tokens (resume mode)."
+                    )
 
         if token_time_ranges:
             logger.info(
@@ -288,7 +321,22 @@ class PriceHistoryFetcher:
         else:
             logger.info(f"Fetching price history for {len(token_ids)} tokens")
 
+        skipped_count = 0
+        saved_count = 0
         for i, token_id in enumerate(token_ids, 1):
+            # Skip if file already exists
+            if resume and token_id in existing_files:
+                skipped_count += 1
+                if skipped_count % 1000 == 0:
+                    logger.info(f"Skipped {skipped_count} already-fetched tokens...")
+                continue
+            
+            if i % 100 == 0:
+                logger.info(
+                    f"Progress: {i}/{len(token_ids)} tokens processed, "
+                    f"{saved_count} saved, {skipped_count} skipped"
+                )
+            
             logger.info(f"Fetching token {i}/{len(token_ids)}: {token_id}")
 
             token_start_ts = start_ts
@@ -308,16 +356,68 @@ class PriceHistoryFetcher:
                     end_ts=token_end_ts,
                     interval=interval,
                 )
-                results.append(history)
+                if output_dir:
+                    try:
+                        self._save_single_history(history, output_dir)
+                        saved_count += 1
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to save token {token_id} after fetching: {save_error}"
+                        )
+                if not output_dir:
+                    results.append(history)
 
             except Exception as e:
                 logger.error(f"Failed to fetch token {token_id}: {e}")
                 continue
 
+        if skipped_count > 0:
+            logger.info(f"Skipped {skipped_count} already-fetched tokens")
         logger.info(
             f"Successfully fetched {len(results)}/{len(token_ids)} token histories"
         )
         return results
+
+    # Save a single token history to file for incremental saves
+    def _save_single_history(
+        self,
+        history: TokenPriceHistory,
+        output_dir: Path | str,
+    ) -> None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if not history.history:
+            logger.info(f"Skipping token {history.token_id} - no price data")
+            return
+
+        output_path = output_dir / f"{history.token_id}.json"
+
+        try:
+            temp_path = output_path.with_suffix(".json.tmp")
+            with open(temp_path, "w") as f:
+                json.dump(history.to_dict(), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Atomic rename
+            temp_path.rename(output_path)
+            
+            logger.info(
+                f"Saved {len(history.history)} price points for "
+                f"{history.token_id} to {output_path}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to save token {history.token_id} to {output_path}: {e}"
+            )
+            temp_path = output_path.with_suffix(".json.tmp")
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+            raise
 
     # Save token price histories to individual JSON files
     def save_histories(
@@ -356,6 +456,7 @@ def fetch_market_price_histories(
     end_ts: int | None = None,
     interval: str | None = None,
     token_time_ranges: dict[str, tuple[int, int]] | None = None,
+    resume: bool = True,
 ) -> list[TokenPriceHistory]:
     with PriceHistoryFetcher() as fetcher:
         histories = fetcher.fetch_multiple_tokens(
@@ -364,9 +465,7 @@ def fetch_market_price_histories(
             end_ts=end_ts,
             interval=interval,
             token_time_ranges=token_time_ranges,
+            output_dir=output_dir,
+            resume=resume,
         )
-
-        if output_dir:
-            fetcher.save_histories(histories, output_dir)
-
         return histories
