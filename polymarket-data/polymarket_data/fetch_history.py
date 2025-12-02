@@ -285,17 +285,20 @@ class PriceHistoryFetcher:
     ) -> list[TokenPriceHistory]:
         results: list[TokenPriceHistory] = []
         
-        # Track which tokens already have files
+        # Track which tokens already have files or have been processed
         existing_files: set[str] = set()
+        processed_tokens: set[str] = set()  # For S3 manifest tracking
+        
         if resume:
             if use_s3:
-                # Check S3 for existing files
-                from polymarket_data.s3_utils import get_existing_token_ids_from_s3
-                existing_files = get_existing_token_ids_from_s3()
+                # Check S3 manifest for already-processed tokens (includes empty ones)
+                from polymarket_data.s3_utils import load_processed_tokens_from_s3
+                processed_tokens = load_processed_tokens_from_s3()
+                existing_files = processed_tokens.copy()
                 if existing_files:
                     logger.info(
-                        f"Found {len(existing_files)} existing price history files in S3. "
-                        "Skipping already-fetched tokens (resume mode)."
+                        f"Found {len(existing_files)} already-processed tokens in S3 manifest. "
+                        "Skipping (resume mode)."
                     )
             elif output_dir:
                 output_path = Path(output_dir)
@@ -377,6 +380,16 @@ class PriceHistoryFetcher:
                         logger.error(
                             f"Failed to upload token {token_id} to S3: {save_error}"
                         )
+                    
+                    # Mark token as processed (even if empty) for resume
+                    processed_tokens.add(token_id)
+                    
+                    # Periodically save manifest (every 100 tokens)
+                    if len(processed_tokens) % 100 == 0:
+                        from polymarket_data.s3_utils import save_processed_tokens_to_s3
+                        save_processed_tokens_to_s3(processed_tokens)
+                        logger.info(f"Saved progress manifest ({len(processed_tokens)} tokens processed)")
+                        
                 elif output_dir:
                     try:
                         self._save_single_history(history, output_dir)
@@ -391,6 +404,12 @@ class PriceHistoryFetcher:
             except Exception as e:
                 logger.error(f"Failed to fetch token {token_id}: {e}")
                 continue
+
+        # Final manifest save for S3 mode
+        if use_s3 and processed_tokens:
+            from polymarket_data.s3_utils import save_processed_tokens_to_s3
+            save_processed_tokens_to_s3(processed_tokens)
+            logger.info(f"Saved final progress manifest ({len(processed_tokens)} tokens processed)")
 
         if skipped_count > 0:
             logger.info(f"Skipped {skipped_count} already-fetched tokens")

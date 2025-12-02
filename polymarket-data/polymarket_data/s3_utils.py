@@ -163,3 +163,39 @@ def get_existing_token_ids_from_s3(bucket: str | None = None) -> set[str]:
     
     return token_ids
 
+
+# Get the S3 key for the processed tokens manifest
+def get_processed_tokens_manifest_key() -> str:
+    return f"{settings.s3_prefix}/raw/price_history/_processed_tokens.json"
+
+
+# Load set of already-processed token IDs from S3 manifest (includes tokens with data AND tokens checked but found empty)
+def load_processed_tokens_from_s3(bucket: str | None = None) -> set[str]:
+    bucket = bucket or settings.s3_bucket
+    if not bucket:
+        return set()
+    
+    key = get_processed_tokens_manifest_key()
+    
+    try:
+        data = download_json_from_s3(key, bucket)
+        return set(data.get("processed_tokens", []))
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return set()
+        raise
+
+
+# Save set of processed token IDs to S3 manifest
+def save_processed_tokens_to_s3(
+    token_ids: set[str],
+    bucket: str | None = None,
+) -> None:
+    bucket = bucket or settings.s3_bucket
+    if not bucket:
+        return
+    
+    key = get_processed_tokens_manifest_key()
+    data = {"processed_tokens": list(token_ids)}
+    upload_json_to_s3(data, key, bucket)
+
