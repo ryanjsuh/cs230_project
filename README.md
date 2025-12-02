@@ -14,10 +14,13 @@ source venv/bin/activate
 
 pip install -r requirements-dev.txt
 
+# set bucket
+export POLYMARKET_S3_BUCKET=cs230-polymarket-data-1
+
 # run scripts in this order
-python scripts/01_fetch_markets.py
-python scripts/02_fetch_history.py
-python scripts/03_clean_all.py
+python scripts/01_fetch_markets.py --s3 --all-markets
+python scripts/02_fetch_history.py --s3
+python scripts/03_clean_all.py --s3
 ```
 
 To run the baseline, open and run all cells in the Google Colab:
