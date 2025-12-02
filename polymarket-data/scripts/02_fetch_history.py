@@ -3,9 +3,15 @@
 Script to fetch price history for markets from Polymarket CLOB API
 
 Usage:
-    python scripts/02_fetch_history.py
-    python scripts/02_fetch_history.py --start-ts 1698700000 --end-ts 1698800000
-    python scripts/02_fetch_history.py --max-tokens 50
+    # Fetch to S3
+    POLYMARKET_S3_BUCKET=cs230-polymarket-data-1 python scripts/02_fetch_history.py --s3
+    
+    # Fetch to local directory (legacy)
+    python scripts/02_fetch_history.py --output data/raw/price_history
+    
+    # Other options
+    python scripts/02_fetch_history.py --s3 --max-tokens 50
+    python scripts/02_fetch_history.py --s3 --start-ts 1698700000 --end-ts 1698800000
 """
 
 import argparse
@@ -29,11 +35,19 @@ logger = logging.getLogger(__name__)
 
 
 # Load markets from JSON file
-def load_markets(markets_file: Path) -> list[Market]:
-    logger.info(f"Loading markets from {markets_file}")
-
-    with open(markets_file) as f:
-        data = json.load(f)
+def load_markets(markets_file: Path | None = None, use_s3: bool = False) -> list[Market]:
+    if use_s3:
+        from polymarket_data.s3_utils import download_json_from_s3
+        
+        s3_key = settings.get_s3_markets_key()
+        logger.info(f"Loading markets from S3: s3://{settings.s3_bucket}/{s3_key}")
+        data = download_json_from_s3(s3_key)
+    else:
+        if markets_file is None:
+            raise ValueError("markets_file required when not using S3")
+        logger.info(f"Loading markets from {markets_file}")
+        with open(markets_file) as f:
+            data = json.load(f)
 
     markets: list[Market] = []
     skipped = 0
@@ -124,14 +138,20 @@ def main() -> None:
     parser.add_argument(
         "--markets",
         type=Path,
-        default=Path(settings.raw_data_dir) / "markets.json",
-        help="Input markets JSON file from step 1",
+        default=None,
+        help="Input markets JSON file from step 1 (local path)",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(settings.raw_data_dir) / "price_history",
-        help="Output directory for price history JSON files",
+        default=None,
+        help="Output directory for price history JSON files (local path)",
+    )
+    parser.add_argument(
+        "--s3",
+        action="store_true",
+        help="Use S3 for both input (markets.json) and output (price histories). "
+        "Requires POLYMARKET_S3_BUCKET env var.",
     )
 
     time_group = parser.add_argument_group("time range")
@@ -166,19 +186,40 @@ def main() -> None:
         parser.error("Both --start-ts and --end-ts must be provided together")
 
     use_override_range = has_start and has_end
+    use_s3 = args.s3
 
-    if not args.markets.exists():
-        logger.error(f"Markets file not found: {args.markets}")
-        logger.error(
-            "Please run scripts/01_fetch_markets.py first to generate markets.json"
-        )
-        sys.exit(1)
+    # Validate S3 configuration
+    if use_s3:
+        if not settings.use_s3:
+            logger.error(
+                "S3 mode requested but POLYMARKET_S3_BUCKET env var not set.\n"
+                "Set it with: export POLYMARKET_S3_BUCKET=your-bucket-name"
+            )
+            sys.exit(1)
+    else:
+        # Local mode: check markets file exists
+        markets_file = args.markets or Path(settings.raw_data_dir) / "markets.json"
+        if not markets_file.exists():
+            logger.error(f"Markets file not found: {markets_file}")
+            logger.error(
+                "Please run scripts/01_fetch_markets.py first to generate markets.json"
+            )
+            sys.exit(1)
 
     logger.info("=" * 60)
     logger.info("Polymarket Price History Fetcher")
     logger.info("=" * 60)
-    logger.info(f"Markets file: {args.markets}")
-    logger.info(f"Output directory: {args.output}")
+    
+    if use_s3:
+        logger.info(f"Mode: S3 (bucket: {settings.s3_bucket})")
+        logger.info(f"Markets source: s3://{settings.s3_bucket}/{settings.get_s3_markets_key()}")
+        logger.info(f"Output: s3://{settings.s3_bucket}/{settings.s3_prefix}/raw/price_history/")
+    else:
+        markets_file = args.markets or Path(settings.raw_data_dir) / "markets.json"
+        output_dir = args.output or Path(settings.raw_data_dir) / "price_history"
+        logger.info(f"Markets file: {markets_file}")
+        logger.info(f"Output directory: {output_dir}")
+    
     if use_override_range:
         logger.info(
             f"Using override time range: {args.start_ts} to {args.end_ts} (unix seconds)"
@@ -190,7 +231,12 @@ def main() -> None:
     logger.info("=" * 60)
 
     try:
-        markets = load_markets(args.markets)
+        # Load markets
+        if use_s3:
+            markets = load_markets(use_s3=True)
+        else:
+            markets_file = args.markets or Path(settings.raw_data_dir) / "markets.json"
+            markets = load_markets(markets_file=markets_file)
 
         if not markets:
             logger.error("No valid markets loaded")
@@ -233,17 +279,30 @@ def main() -> None:
                 }
 
         logger.info(f"\nFetching price history for {len(token_ids)} tokens...")
-        histories = fetch_market_price_histories(
-            token_ids=token_ids,
-            output_dir=args.output,
-            start_ts=args.start_ts,
-            end_ts=args.end_ts,
-            token_time_ranges=token_time_ranges,
-        )
+        
+        if use_s3:
+            histories = fetch_market_price_histories(
+                token_ids=token_ids,
+                start_ts=args.start_ts,
+                end_ts=args.end_ts,
+                token_time_ranges=token_time_ranges,
+                use_s3=True,
+            )
+            output_location = f"s3://{settings.s3_bucket}/{settings.s3_prefix}/raw/price_history/"
+        else:
+            output_dir = args.output or Path(settings.raw_data_dir) / "price_history"
+            histories = fetch_market_price_histories(
+                token_ids=token_ids,
+                output_dir=output_dir,
+                start_ts=args.start_ts,
+                end_ts=args.end_ts,
+                token_time_ranges=token_time_ranges,
+            )
+            output_location = str(output_dir)
 
         logger.info("=" * 60)
-        logger.info(f"Fetched {len(histories)} token histories")
-        logger.info(f"Data saved to: {args.output}")
+        logger.info(f"Fetched price histories for {len(token_ids)} tokens")
+        logger.info(f"Data saved to: {output_location}")
         logger.info("=" * 60)
 
         if histories:

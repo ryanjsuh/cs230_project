@@ -42,6 +42,23 @@ class Settings(BaseSettings):
     raw_data_dir: str = "data/raw"
     processed_data_dir: str = "data/processed"
 
+    # AWS S3 settings
+    s3_bucket: str | None = Field(
+        default=None,
+        alias="POLYMARKET_S3_BUCKET",
+        description="S3 bucket name for storing data (e.g., cs230-polymarket-data-1)",
+    )
+    s3_prefix: str = Field(
+        default="polymarket",
+        alias="POLYMARKET_S3_PREFIX",
+        description="Prefix/folder within the S3 bucket",
+    )
+    s3_region: str = Field(
+        default="us-east-1",
+        alias="AWS_DEFAULT_REGION",
+        description="AWS region for S3 bucket",
+    )
+
     # Pagination
     default_page_size: int = 100
     max_page_size: int = 100
@@ -69,6 +86,37 @@ class Settings(BaseSettings):
     @property
     def lookback_timedelta(self) -> timedelta:
         return timedelta(days=self.lookback_days)
+
+    # Check if S3 storage is configured
+    @property
+    def use_s3(self) -> bool:
+        return self.s3_bucket is not None and len(self.s3_bucket) > 0
+
+    # Get S3 URI for raw data directory
+    @property
+    def s3_raw_data_uri(self) -> str:
+        if not self.s3_bucket:
+            raise ValueError("S3 bucket not configured")
+        return f"s3://{self.s3_bucket}/{self.s3_prefix}/raw"
+
+    # Get S3 URI for processed data directory
+    @property
+    def s3_processed_data_uri(self) -> str:
+        if not self.s3_bucket:
+            raise ValueError("S3 bucket not configured")
+        return f"s3://{self.s3_bucket}/{self.s3_prefix}/processed"
+
+    # Get S3 key for markets JSON file
+    def get_s3_markets_key(self) -> str:
+        return f"{self.s3_prefix}/raw/markets.json"
+
+    # Get S3 key for a token's price history JSON file
+    def get_s3_price_history_key(self, token_id: str) -> str:
+        return f"{self.s3_prefix}/raw/price_history/{token_id}.json"
+
+    # Get S3 key for processed parquet file
+    def get_s3_processed_key(self, filename: str = "polymarket_data.parquet") -> str:
+        return f"{self.s3_prefix}/processed/{filename}"
 
 
 settings = Settings()

@@ -281,37 +281,48 @@ class PriceHistoryFetcher:
         token_time_ranges: dict[str, tuple[int, int]] | None = None,
         output_dir: Path | str | None = None,
         resume: bool = True,
+        use_s3: bool = False,
     ) -> list[TokenPriceHistory]:
         results: list[TokenPriceHistory] = []
         
         # Track which tokens already have files
         existing_files: set[str] = set()
-        if resume and output_dir:
-            output_path = Path(output_dir)
-            if output_path.exists():
-                # Check for both completed files and temp files
-                existing_files = {
-                    f.stem for f in output_path.glob("*.json")
-                    if not f.name.endswith(".tmp")
-                }
-                # Clean up
-                temp_files = list(output_path.glob("*.json.tmp"))
-                if temp_files:
-                    logger.info(
-                        f"Found {len(temp_files)} leftover temp files from previous run. "
-                        "Cleaning up..."
-                    )
-                    for temp_file in temp_files:
-                        try:
-                            temp_file.unlink()
-                        except Exception as e:
-                            logger.warning(f"Failed to remove temp file {temp_file}: {e}")
-                
+        if resume:
+            if use_s3:
+                # Check S3 for existing files
+                from polymarket_data.s3_utils import get_existing_token_ids_from_s3
+                existing_files = get_existing_token_ids_from_s3()
                 if existing_files:
                     logger.info(
-                        f"Found {len(existing_files)} existing price history files. "
+                        f"Found {len(existing_files)} existing price history files in S3. "
                         "Skipping already-fetched tokens (resume mode)."
                     )
+            elif output_dir:
+                output_path = Path(output_dir)
+                if output_path.exists():
+                    # Check for both completed files and temp files
+                    existing_files = {
+                        f.stem for f in output_path.glob("*.json")
+                        if not f.name.endswith(".tmp")
+                    }
+                    # Clean up
+                    temp_files = list(output_path.glob("*.json.tmp"))
+                    if temp_files:
+                        logger.info(
+                            f"Found {len(temp_files)} leftover temp files from previous run. "
+                            "Cleaning up..."
+                        )
+                        for temp_file in temp_files:
+                            try:
+                                temp_file.unlink()
+                            except Exception as e:
+                                logger.warning(f"Failed to remove temp file {temp_file}: {e}")
+                    
+                    if existing_files:
+                        logger.info(
+                            f"Found {len(existing_files)} existing price history files. "
+                            "Skipping already-fetched tokens (resume mode)."
+                        )
 
         if token_time_ranges:
             logger.info(
@@ -356,7 +367,17 @@ class PriceHistoryFetcher:
                     end_ts=token_end_ts,
                     interval=interval,
                 )
-                if output_dir:
+                
+                if use_s3:
+                    # Upload directly to S3
+                    try:
+                        self._save_single_history_to_s3(history)
+                        saved_count += 1
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to upload token {token_id} to S3: {save_error}"
+                        )
+                elif output_dir:
                     try:
                         self._save_single_history(history, output_dir)
                         saved_count += 1
@@ -364,7 +385,7 @@ class PriceHistoryFetcher:
                         logger.error(
                             f"Failed to save token {token_id} after fetching: {save_error}"
                         )
-                if not output_dir:
+                else:
                     results.append(history)
 
             except Exception as e:
@@ -419,6 +440,23 @@ class PriceHistoryFetcher:
                     pass
             raise
 
+    # Save a single token history directly to S3
+    def _save_single_history_to_s3(self, history: TokenPriceHistory) -> None:
+        if not history.history:
+            logger.info(f"Skipping token {history.token_id} - no price data")
+            return
+
+        from polymarket_data.config import settings
+        from polymarket_data.s3_utils import upload_json_to_s3
+
+        s3_key = settings.get_s3_price_history_key(history.token_id)
+        upload_json_to_s3(history.to_dict(), s3_key)
+        
+        logger.info(
+            f"Uploaded {len(history.history)} price points for "
+            f"{history.token_id} to S3"
+        )
+
     # Save token price histories to individual JSON files
     def save_histories(
         self,
@@ -448,7 +486,7 @@ class PriceHistoryFetcher:
         logger.info(f"Saved {saved_count}/{len(histories)} token histories to {output_dir}")
 
 
-# Main entry point for price history fetching
+# Fetch price histories for multiple tokens
 def fetch_market_price_histories(
     token_ids: list[str],
     output_dir: Path | str | None = None,
@@ -457,6 +495,7 @@ def fetch_market_price_histories(
     interval: str | None = None,
     token_time_ranges: dict[str, tuple[int, int]] | None = None,
     resume: bool = True,
+    use_s3: bool = False,
 ) -> list[TokenPriceHistory]:
     with PriceHistoryFetcher() as fetcher:
         histories = fetcher.fetch_multiple_tokens(
@@ -467,5 +506,6 @@ def fetch_market_price_histories(
             token_time_ranges=token_time_ranges,
             output_dir=output_dir,
             resume=resume,
+            use_s3=use_s3,
         )
         return histories

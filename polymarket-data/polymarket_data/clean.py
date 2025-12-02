@@ -20,20 +20,37 @@ class MarketDataProcessor:
     # Initialize data processor
     def __init__(
         self,
-        markets_file: Path | str,
-        price_history_dir: Path | str,
+        markets_file: Path | str | None = None,
+        price_history_dir: Path | str | None = None,
         resample_freq: str | None = None,
+        use_s3: bool = False,
     ) -> None:
-        self.markets_file = Path(markets_file)
-        self.price_history_dir = Path(price_history_dir)
+        self.use_s3 = use_s3
         self.resample_freq = resample_freq or settings.resample_frequency
+        
+        if use_s3:
+            self.markets_file = None
+            self.price_history_dir = None
+        else:
+            if markets_file is None or price_history_dir is None:
+                raise ValueError(
+                    "markets_file and price_history_dir required when not using S3"
+                )
+            self.markets_file = Path(markets_file)
+            self.price_history_dir = Path(price_history_dir)
 
     # Load markets from JSON file
     def load_markets(self) -> list[Market]:
-        logger.info(f"Loading markets from {self.markets_file}")
-
-        with open(self.markets_file) as f:
-            data = json.load(f)
+        if self.use_s3:
+            from polymarket_data.s3_utils import download_json_from_s3
+            
+            s3_key = settings.get_s3_markets_key()
+            logger.info(f"Loading markets from S3: {s3_key}")
+            data = download_json_from_s3(s3_key)
+        else:
+            logger.info(f"Loading markets from {self.markets_file}")
+            with open(self.markets_file) as f:
+                data = json.load(f)
 
         markets = []
         for market_dict in data:
@@ -49,15 +66,25 @@ class MarketDataProcessor:
 
     # Load price history for a single token
     def load_token_history(self, token_id: str) -> TokenPriceHistory | None:
-        file_path = self.price_history_dir / f"{token_id}.json"
-
-        if not file_path.exists():
-            logger.debug(f"No price history file for token {token_id}")
-            return None
-
         try:
-            with open(file_path) as f:
-                data = json.load(f)
+            if self.use_s3:
+                from polymarket_data.s3_utils import download_json_from_s3, s3_object_exists
+                
+                s3_key = settings.get_s3_price_history_key(token_id)
+                if not s3_object_exists(s3_key):
+                    logger.debug(f"No price history in S3 for token {token_id}")
+                    return None
+                
+                data = download_json_from_s3(s3_key)
+            else:
+                file_path = self.price_history_dir / f"{token_id}.json"
+
+                if not file_path.exists():
+                    logger.debug(f"No price history file for token {token_id}")
+                    return None
+
+                with open(file_path) as f:
+                    data = json.load(f)
 
             if "token_id" not in data or "history" not in data:
                 logger.warning(
@@ -298,7 +325,43 @@ class MarketDataProcessor:
         return combined
 
     # Save DataFrame to Parquet file
-    def save_parquet(self, df: pd.DataFrame, output_path: Path | str) -> None:
+    def save_parquet(
+        self,
+        df: pd.DataFrame,
+        output_path: Path | str | None = None,
+        s3_key: str | None = None,
+    ) -> None:
+        """
+        Save DataFrame to Parquet file.
+        
+        Args:
+            df: DataFrame to save
+            output_path: Local file path (ignored if s3_key provided)
+            s3_key: S3 object key to upload directly to S3
+        """
+        if s3_key is not None:
+            import io
+            from polymarket_data.s3_utils import upload_bytes_to_s3
+            
+            # Write parquet to in-memory buffer
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False, engine="pyarrow")
+            parquet_bytes = buffer.getvalue()
+            
+            upload_bytes_to_s3(
+                parquet_bytes,
+                s3_key,
+                content_type="application/octet-stream",
+            )
+            
+            size_mb = len(parquet_bytes) / (1024 * 1024)
+            logger.info(f"Saved {len(df)} rows to S3: {s3_key}")
+            logger.info(f"File size: {size_mb:.2f} MB")
+            return
+        
+        if output_path is None:
+            raise ValueError("Either output_path or s3_key must be provided")
+        
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -309,20 +372,29 @@ class MarketDataProcessor:
         size_mb = output_path.stat().st_size / (1024 * 1024)
         logger.info(f"File size: {size_mb:.2f} MB")
 
-# Main entry point for data cleaning and processing
+# Clean and combine market data into a single DataFrame
 def clean_and_combine_data(
-    markets_file: Path | str,
-    price_history_dir: Path | str,
-    output_file: Path | str,
+    markets_file: Path | str | None = None,
+    price_history_dir: Path | str | None = None,
+    output_file: Path | str | None = None,
     resample_freq: str | None = None,
+    use_s3: bool = False,
+    s3_output_key: str | None = None,
 ) -> pd.DataFrame:
     processor = MarketDataProcessor(
         markets_file=markets_file,
         price_history_dir=price_history_dir,
         resample_freq=resample_freq,
+        use_s3=use_s3,
     )
 
     df = processor.process_all_markets()
-    processor.save_parquet(df, output_file)
+    
+    if s3_output_key:
+        processor.save_parquet(df, s3_key=s3_output_key)
+    elif output_file:
+        processor.save_parquet(df, output_path=output_file)
+    else:
+        logger.warning("No output path specified, DataFrame not saved")
 
     return df

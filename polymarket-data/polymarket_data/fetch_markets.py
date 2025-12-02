@@ -337,12 +337,29 @@ class MarketFetcher:
         )
         return filtered
 
-    # Save markets to JSON file as a JSON array
-    def save_markets(self, markets: list[Market], output_path: Path | str) -> None:
+    # Save markets to JSON file as a JSON array (local or S3)
+    def save_markets(
+        self,
+        markets: list[Market],
+        output_path: Path | str | None = None,
+        s3_key: str | None = None,
+    ) -> None:
+        data = [m.model_dump(by_alias=True) for m in markets]
+
+        # If S3 key provided, upload directly to S3
+        if s3_key is not None:
+            from polymarket_data.s3_utils import upload_json_to_s3
+
+            upload_json_to_s3(data, s3_key)
+            logger.info(f"Saved {len(markets)} markets to S3: {s3_key}")
+            return
+
+        # Otherwise save locally
+        if output_path is None:
+            raise ValueError("Either output_path or s3_key must be provided")
+
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        data = [m.model_dump(by_alias=True) for m in markets]
 
         with open(output_path, "w") as f:
             json.dump(data, f, indent=2)
@@ -350,12 +367,13 @@ class MarketFetcher:
         logger.info(f"Saved {len(markets)} markets to {output_path}")
 
 
-# Main entry point for market fetching
+# Fetch resolved markets from Polymarket API
 def fetch_resolved_markets(
     lookback_days: int | None = None,
     output_path: Path | str | None = None,
     max_markets: int | None = None,
     fetch_all: bool = False,
+    s3_key: str | None = None,
 ) -> list[Market]:
     if fetch_all:
         logger.info("Fetching ALL closed markets (no date filter)")
@@ -370,8 +388,10 @@ def fetch_resolved_markets(
                 f"Fetched {len(all_markets)} closed markets from API"
             )
             
-            if output_path:
-                fetcher.save_markets(all_markets, output_path)
+            if s3_key:
+                fetcher.save_markets(all_markets, s3_key=s3_key)
+            elif output_path:
+                fetcher.save_markets(all_markets, output_path=output_path)
             
             return all_markets
     
@@ -403,7 +423,9 @@ def fetch_resolved_markets(
             f"filtered to {len(filtered_markets)} markets closed within {lookback_days} days"
         )
 
-        if output_path:
-            fetcher.save_markets(filtered_markets, output_path)
+        if s3_key:
+            fetcher.save_markets(filtered_markets, s3_key=s3_key)
+        elif output_path:
+            fetcher.save_markets(filtered_markets, output_path=output_path)
 
         return filtered_markets
