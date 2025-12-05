@@ -107,7 +107,7 @@ def main():
     model_config = processor.model_config
     
     # Load model
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model = PredictionMarketTimesFM(model_config)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
