@@ -249,33 +249,8 @@ class MarketDataProcessor:
 
         return combined
 
-    # Process all markets and combine into single DataFrame
-    def process_all_markets(self) -> pd.DataFrame:
-        markets = self.load_markets()
-
-        logger.info(f"Processing {len(markets)} markets...")
-
-        all_dfs = []
-        processed_count = 0
-        skipped_count = 0
-
-        for i, market in enumerate(markets, 1):
-            if i % 10 == 0:
-                logger.info(f"Processing market {i}/{len(markets)}...")
-
-            df = self.process_market(market)
-
-            if df is not None:
-                all_dfs.append(df)
-                processed_count += 1
-            else:
-                skipped_count += 1
-
-        logger.info(
-            f"Processed {processed_count} markets "
-            f"(skipped {skipped_count} with no data)"
-        )
-
+    # Finalize combined DataFrame with filtering and sorting
+    def _finalize_dataframe(self, all_dfs: list[pd.DataFrame]) -> pd.DataFrame:
         if not all_dfs:
             raise ValueError("No market data to process")
 
@@ -323,6 +298,67 @@ class MarketDataProcessor:
             logger.warning(f"Missing values in critical columns: {missing_info}")
 
         return combined
+
+    # Process all markets and combine into single DataFrame
+    def process_all_markets(
+        self,
+        checkpoint_interval: int | None = None,
+        checkpoint_path: Path | str | None = None,
+        checkpoint_s3_key: str | None = None,
+        max_markets: int | None = None,
+    ) -> pd.DataFrame:
+        """
+        Process all markets with optional checkpointing.
+        
+        Args:
+            checkpoint_interval: Save checkpoint every N markets (e.g., 1000)
+            checkpoint_path: Local path for checkpoint parquet files
+            checkpoint_s3_key: S3 key for checkpoint parquet files
+            max_markets: Stop after processing this many markets (for partial runs)
+        """
+        markets = self.load_markets()
+        
+        if max_markets:
+            markets = markets[:max_markets]
+            logger.info(f"Limited to first {max_markets} markets")
+
+        logger.info(f"Processing {len(markets)} markets...")
+
+        all_dfs = []
+        processed_count = 0
+        skipped_count = 0
+
+        for i, market in enumerate(markets, 1):
+            if i % 10 == 0:
+                logger.info(f"Processing market {i}/{len(markets)}...")
+
+            df = self.process_market(market)
+
+            if df is not None:
+                all_dfs.append(df)
+                processed_count += 1
+            else:
+                skipped_count += 1
+
+            # Checkpoint save
+            if checkpoint_interval and i % checkpoint_interval == 0 and all_dfs:
+                logger.info(f"Saving checkpoint at market {i}...")
+                try:
+                    checkpoint_df = self._finalize_dataframe(all_dfs.copy())
+                    if checkpoint_s3_key:
+                        self.save_parquet(checkpoint_df, s3_key=checkpoint_s3_key)
+                    elif checkpoint_path:
+                        self.save_parquet(checkpoint_df, output_path=checkpoint_path)
+                    logger.info(f"Checkpoint saved: {processed_count} markets, {len(checkpoint_df)} rows")
+                except Exception as e:
+                    logger.warning(f"Checkpoint save failed: {e}")
+
+        logger.info(
+            f"Processed {processed_count} markets "
+            f"(skipped {skipped_count} with no data)"
+        )
+
+        return self._finalize_dataframe(all_dfs)
 
     # Save DataFrame to Parquet file
     def save_parquet(
@@ -380,6 +416,8 @@ def clean_and_combine_data(
     resample_freq: str | None = None,
     use_s3: bool = False,
     s3_output_key: str | None = None,
+    checkpoint_interval: int | None = None,
+    max_markets: int | None = None,
 ) -> pd.DataFrame:
     processor = MarketDataProcessor(
         markets_file=markets_file,
@@ -388,7 +426,12 @@ def clean_and_combine_data(
         use_s3=use_s3,
     )
 
-    df = processor.process_all_markets()
+    df = processor.process_all_markets(
+        checkpoint_interval=checkpoint_interval,
+        checkpoint_path=output_file,
+        checkpoint_s3_key=s3_output_key,
+        max_markets=max_markets,
+    )
     
     if s3_output_key:
         processor.save_parquet(df, s3_key=s3_output_key)

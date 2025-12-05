@@ -72,6 +72,19 @@ def main() -> None:
         help="Read from S3 and write output to S3. "
         "Requires POLYMARKET_S3_BUCKET env var.",
     )
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=None,
+        help="Save checkpoint every N markets (e.g., 1000). "
+        "Useful for long runs to get partial results.",
+    )
+    parser.add_argument(
+        "--max-markets",
+        type=int,
+        default=None,
+        help="Stop after processing this many markets (for partial runs).",
+    )
 
     args = parser.parse_args()
     use_s3 = args.s3
@@ -123,6 +136,10 @@ def main() -> None:
         logger.info(f"Output file: {output_file}")
     
     logger.info(f"Resample frequency: {resample_freq}")
+    if args.checkpoint_interval:
+        logger.info(f"Checkpoint interval: every {args.checkpoint_interval} markets")
+    if args.max_markets:
+        logger.info(f"Max markets: {args.max_markets}")
     logger.info("=" * 60)
 
     try:
@@ -131,6 +148,8 @@ def main() -> None:
                 resample_freq=resample_freq,
                 use_s3=True,
                 s3_output_key=settings.get_s3_processed_key(),
+                checkpoint_interval=args.checkpoint_interval,
+                max_markets=args.max_markets,
             )
             output_location = f"s3://{settings.s3_bucket}/{settings.get_s3_processed_key()}"
         else:
@@ -143,6 +162,8 @@ def main() -> None:
                 price_history_dir=price_history_dir,
                 output_file=output_file,
                 resample_freq=resample_freq,
+                checkpoint_interval=args.checkpoint_interval,
+                max_markets=args.max_markets,
             )
             output_location = str(output_file)
 
