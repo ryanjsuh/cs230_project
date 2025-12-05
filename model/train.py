@@ -76,7 +76,8 @@ class Trainer:
             self.scheduler = None
         
         # Mixed precision
-        self.scaler = GradScaler() if config.mixed_precision and self.device.type == "cuda" else None
+        use_amp = False  
+        self.scaler = GradScaler() if use_amp else None
         
         # Tracking
         self.best_val_loss = float('inf')
@@ -137,6 +138,11 @@ class Trainer:
                 pred_horizon = predictions[:, -horizon_patches:, :]
                 loss = self.criterion(pred_horizon, target_patches)
                 
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"  WARNING: NaN/Inf loss at batch {batch_idx}, skipping...")
+                    self.optimizer.zero_grad()
+                    continue
+                
                 loss.backward()
                 
                 if self.config.grad_clip > 0:
@@ -147,12 +153,13 @@ class Trainer:
                 
                 self.optimizer.step()
             
-            total_loss += loss.item()
+            loss_val = loss.item()
+            total_loss += loss_val
             num_batches += 1
             
             # Logging
             if batch_idx % self.config.log_every == 0:
-                print(f"  Batch {batch_idx}/{len(self.train_loader)}, Loss: {loss.item():.6f}")
+                print(f"  Batch {batch_idx}/{len(self.train_loader)}, Loss: {loss_val:.6f}")
         
         return total_loss / num_batches
     
@@ -331,7 +338,7 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     

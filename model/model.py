@@ -29,7 +29,7 @@ class DecodeCache:
 # Reversible Instance Normalization
 class RevIN(nn.Module):
     # Normalizes inputs using running mean/std
-    def __init__(self, eps: float = 1e-5):
+    def __init__(self, eps: float = 1e-8):
         super().__init__()
         self.eps = eps
     
@@ -354,7 +354,7 @@ class PredictionMarketTimesFM(nn.Module):
         # Masked std
         sq_diff = ((prices - mu) * valid_mask.float()) ** 2
         variance = sq_diff.sum(dim=-1, keepdim=True) / valid_count
-        sigma = torch.sqrt(variance + 1e-5)
+        sigma = torch.sqrt(variance + 1e-8).clamp(min=1e-4)  
         
         return mu.unsqueeze(-1), sigma.unsqueeze(-1)  # (batch, num_patches, 1, 1)
     
