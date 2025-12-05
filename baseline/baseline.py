@@ -276,7 +276,7 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train LSTM baseline model",
+        description="train LSTM baseline model",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -284,31 +284,31 @@ def parse_args():
         "--data",
         type=str,
         required=True,
-        help="Path to the polymarket_data.parquet file"
+        help="path to the polymarket_data.parquet file"
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=20,
-        help="Number of training epochs"
+        help="number of training epochs"
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=64,
-        help="Batch size for training"
+        help="batch size for training"
     )
     parser.add_argument(
         "--lr",
         type=float,
         default=0.001,
-        help="Learning rate"
+        help="learning rate"
     )
     parser.add_argument(
         "--save-model",
         type=str,
         default=None,
-        help="Path to save the trained model (optional)"
+        help="path to save the trained model"
     )
     
     return parser.parse_args()
