@@ -8,23 +8,24 @@ from typing import Literal
 # Model architecture config
 @dataclass
 class ModelConfig:
-    input_patch_len: int = 8          
-    output_patch_len: int = 32        
-    context_patches: int = 4          
+    # Patch settings
+    input_patch_len: int = 32         
+    output_patch_len: int = 128       
+    context_patches: int = 8          
     horizon_patches: int = 1          
     
     # Transformer dims
-    d_model: int = 128                
-    n_heads: int = 4                  
-    n_layers: int = 4                 
-    d_ff: int = 512                   
-    dropout: float = 0.1              
+    d_model: int = 256                
+    n_heads: int = 8                  
+    n_layers: int = 6                 
+    d_ff: int = 256                   
+    dropout: float = 0.2              
     
     # Input features
     n_price_features: int = 1         
     n_aux_features: int = 1           
     n_categories: int = 50            
-    category_embed_dim: int = 16      
+    category_embed_dim: int = 32      
     
     # Output settings
     use_sigmoid: bool = True          
@@ -54,8 +55,8 @@ class TrainingConfig:
     val_split: float = 0.1            
     
     # Training
-    batch_size: int = 64
-    learning_rate: float = 1e-4
+    batch_size: int = 64              
+    learning_rate: float = 5e-4       
     weight_decay: float = 1e-5
     num_epochs: int = 50
     warmup_steps: int = 1000
@@ -84,9 +85,9 @@ class TrainingConfig:
 @dataclass  
 class DataConfig:
     # Sequence settings
-    context_length: int = 32          
-    horizon_length: int = 32          
-    stride: int = 8                   
+    context_length: int = 256         
+    horizon_length: int = 128         
+    stride: int = 32                  
     
     # Normalization
     normalize_prices: bool = True
@@ -97,6 +98,6 @@ class DataConfig:
     unknown_category: str = "Unknown"
     
     # Filtering
-    min_sequence_length: int = 64     
+    min_sequence_length: int = 384    
     max_markets: int | None = None    
 

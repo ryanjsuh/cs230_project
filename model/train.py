@@ -331,18 +331,18 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     
     # Model config overrides
-    parser.add_argument("--d-model", type=int, default=128, help="Model dimension")
-    parser.add_argument("--n-layers", type=int, default=4, help="Number of layers")
-    parser.add_argument("--n-heads", type=int, default=4, help="Number of attention heads")
-    parser.add_argument("--patch-len", type=int, default=8, help="Input patch length")
-    parser.add_argument("--output-patch-len", type=int, default=16, help="Output patch length")
-    parser.add_argument("--context-patches", type=int, default=4, help="Number of context patches")
-    parser.add_argument("--horizon-patches", type=int, default=2, help="Number of horizon patches")
+    parser.add_argument("--d-model", type=int, default=256, help="Model dimension")
+    parser.add_argument("--n-layers", type=int, default=6, help="Number of layers")
+    parser.add_argument("--n-heads", type=int, default=8, help="Number of attention heads")
+    parser.add_argument("--patch-len", type=int, default=32, help="Input patch length")
+    parser.add_argument("--output-patch-len", type=int, default=128, help="Output patch length")
+    parser.add_argument("--context-patches", type=int, default=8, help="Number of context patches")
+    parser.add_argument("--horizon-patches", type=int, default=1, help="Number of horizon patches")
     
     args = parser.parse_args()
     
@@ -357,10 +357,12 @@ def main():
         d_model=args.d_model,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
+        d_ff=args.d_model,  
         input_patch_len=args.patch_len,
         output_patch_len=args.output_patch_len,
         context_patches=args.context_patches,
         horizon_patches=args.horizon_patches,
+        dropout=0.2,  
     )
     
     data_config = DataConfig(
