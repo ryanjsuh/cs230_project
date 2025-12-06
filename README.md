@@ -40,7 +40,7 @@ pip install -r requirements.txt
 
 # train (adjust paths below)
 python train.py \
-    --data ../polymarket-data/data/processed/polymarket_data.parquet \
+    --data ../polymarket-data/data/processed/data.parquet \
     --checkpoint-dir checkpoints \
     --epochs 50 \
     --batch-size 64 \
@@ -53,7 +53,7 @@ python train.py \
 python evaluate.py \
     --checkpoint checkpoints/best_model.pt \
     --processor checkpoints/processor.pkl \
-    --data ../polymarket-data/data/processed/polymarket_data.parquet
+    --data ../polymarket-data/data/processed/data.parquet
 ```
 
 ## Background
