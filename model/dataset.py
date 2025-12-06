@@ -95,12 +95,17 @@ class DataProcessor:
         seed: int = 42,
     ) -> Tuple[PredictionMarketDataset, PredictionMarketDataset, PredictionMarketDataset]:
         # Load data
+        import time
         print(f"Loading data from {data_path}...")
+        t0 = time.time()
         df = pd.read_parquet(data_path)
-        print(f"Loaded {len(df):,} rows")
+        print(f"Loaded {len(df):,} rows in {time.time()-t0:.1f}s")
         
         # Sort by market, token, timestamp
+        print("Sorting data...")
+        t0 = time.time()
         df = df.sort_values(['market_id', 'token_id', 'timestamp'])
+        print(f"Sorted in {time.time()-t0:.1f}s")
         
         # Filter columns
         required_cols = ['price', 'hours_to_resolution', 'market_id', 'token_id', 'category', 'timestamp']
@@ -133,9 +138,20 @@ class DataProcessor:
         print(f"Markets split: {len(self.train_markets)} train, {len(self.val_markets)} val, {len(self.test_markets)} test")
         
         # Create sequences for each split
+        print("\nCreating training sequences...")
+        t0 = time.time()
         train_data = self._create_sequences(df[df['market_id'].isin(self.train_markets)])
+        print(f"Training sequences created in {time.time()-t0:.1f}s")
+        
+        print("\nCreating validation sequences...")
+        t0 = time.time()
         val_data = self._create_sequences(df[df['market_id'].isin(self.val_markets)])
+        print(f"Validation sequences created in {time.time()-t0:.1f}s")
+        
+        print("\nCreating test sequences...")
+        t0 = time.time()
         test_data = self._create_sequences(df[df['market_id'].isin(self.test_markets)])
+        print(f"Test sequences created in {time.time()-t0:.1f}s")
         
         # Fit scalers on training data only
         self._fit_scalers(train_data)
@@ -186,7 +202,14 @@ class DataProcessor:
         category_ids = []
         market_ids = []
         
-        for (market_id, token_id), group in df.groupby(['market_id', 'token_id']):
+        groups = list(df.groupby(['market_id', 'token_id']))
+        total_groups = len(groups)
+        logger.info(f"Processing {total_groups:,} market/token groups...")
+        
+        for idx, ((market_id, token_id), group) in enumerate(groups):
+            if idx % 500 == 0:
+                logger.info(f"  Progress: {idx:,}/{total_groups:,} groups ({100*idx/total_groups:.1f}%)")
+            
             prices = group['price'].values
             hours = group['hours_to_resolution'].values
             cat_id = group['category_id'].iloc[0]
