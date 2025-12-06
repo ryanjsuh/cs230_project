@@ -20,10 +20,18 @@ from model.dataset import DataProcessor, PredictionMarketDataset
 
 
 # Load model from checkpoint
-def load_model(checkpoint_path: str, device: str = "cuda") -> tuple:
+def load_model(checkpoint_path: str, processor: DataProcessor = None, device: str = "cuda") -> tuple:
     device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model_config = ModelConfig()
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Load model config from processor
+    if processor is not None and hasattr(processor, 'model_config'):
+        model_config = processor.model_config
+        print(f"Loaded model config from processor")
+    else:
+        # Fallback to default config with warning
+        model_config = ModelConfig()
+        print("WARNING: Using default ModelConfig. This may not match trained model!")
     
     model = PredictionMarketTimesFM(model_config)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -32,6 +40,8 @@ def load_model(checkpoint_path: str, device: str = "cuda") -> tuple:
     
     print(f"Loaded model from {checkpoint_path}")
     print(f"Model parameters: {model.count_parameters():,}")
+    print(f"  d_model: {model_config.d_model}, n_layers: {model_config.n_layers}")
+    print(f"  n_categories: {model_config.n_categories}")
     
     return model, model_config, device
 
@@ -185,11 +195,8 @@ def main():
     # Load processor
     processor = DataProcessor.load(args.processor)
     
-    # Load model
-    model, model_config, device = load_model(args.checkpoint, args.device)
-    
-    # Override processor configs with loaded model config
-    processor.model_config = model_config
+    # Load model using config from processor
+    model, model_config, device = load_model(args.checkpoint, processor, args.device)
     
     # Load test data
     print(f"\nLoading data from {args.data}...")

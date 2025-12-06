@@ -1,32 +1,48 @@
 """
-Naive last-value baseline used by TimesFM for computing scaled MAE:
+Naive last-value baseline for computing scaled MAE:
 For each series, predict the last observed value for all future timesteps
 """
 
 import argparse
-import sys
+import pickle
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+# Default hyperparams
+CONTEXT_LENGTH = 256
+HORIZON_LENGTH = 128
+STRIDE = 32
+SEED = 42
+TRAIN_SPLIT = 0.8
+VAL_SPLIT = 0.1
+
 
 # Predict last context value for entire horizon
 def naive_last_value_forecast(context: np.ndarray, horizon: int) -> np.ndarray:
-    if context.ndim == 2:
-        # Univariate: (B, L) -> (B, H)
-        last_values = context[:, -1:]  # (B, 1)
-        preds = np.repeat(last_values, horizon, axis=1)  # (B, H)
+    if context.ndim == 1:
+        # Single series: (L,) -> (H,)
+        return np.full(horizon, context[-1])
+    elif context.ndim == 2:
+        # Batch univariate: (B, L) -> (B, H)
+        last_values = context[:, -1:]
+        return np.repeat(last_values, horizon, axis=1)
     else:
-        # Multivariate: (B, L, D) -> (B, H, D)
-        last_values = context[:, -1:, :]  # (B, 1, D)
-        preds = np.repeat(last_values, horizon, axis=1)  # (B, H, D)
-    return preds
+        # Batch multivariate: (B, L, D) -> use price feature (index 0)
+        last_values = context[:, -1, 0:1]
+        return np.repeat(last_values, horizon, axis=1)
 
 
-# Create windowed sequences from dataframe
-def create_sequences(df: pd.DataFrame, context_length: int, horizon_length: int, stride: int = 1):
+# Create windowed sequences with stride
+def create_sequences(
+    df: pd.DataFrame,
+    context_length: int,
+    horizon_length: int,
+    stride: int = STRIDE,
+    use_hours: bool = False,
+):
     sequences = []
     targets = []
     market_ids = []
@@ -39,8 +55,20 @@ def create_sequences(df: pd.DataFrame, context_length: int, horizon_length: int,
         if len(prices) < context_length + horizon_length:
             continue
         
+        if use_hours and 'hours_to_resolution' in group.columns:
+            hours = group['hours_to_resolution'].values
+        else:
+            hours = None
+        
         for i in range(0, len(prices) - context_length - horizon_length + 1, stride):
-            context = prices[i:i + context_length]
+            if hours is not None:
+                context = np.column_stack([
+                    prices[i:i + context_length],
+                    hours[i:i + context_length]
+                ])
+            else:
+                context = prices[i:i + context_length]
+            
             target = prices[i + context_length:i + context_length + horizon_length]
             
             sequences.append(context)
@@ -50,22 +78,82 @@ def create_sequences(df: pd.DataFrame, context_length: int, horizon_length: int,
     return np.array(sequences), np.array(targets), np.array(market_ids)
 
 
+# Split data by market for zero-shot evals
+def split_by_market(
+    X: np.ndarray,
+    y: np.ndarray,
+    market_ids: np.ndarray,
+    train_split: float = TRAIN_SPLIT,
+    val_split: float = VAL_SPLIT,
+    seed: int = SEED,
+    processor_path: str = None,
+):
+    if processor_path is not None:
+        with open(processor_path, 'rb') as f:
+            state = pickle.load(f)
+        train_markets = set(state['train_markets'])
+        val_markets = set(state['val_markets'])
+        test_markets = set(state['test_markets'])
+        print(f"Loaded market splits from {processor_path}")
+    else:
+        unique_markets = np.unique(market_ids)
+        np.random.seed(seed)
+        np.random.shuffle(unique_markets)
+        
+        n_total = len(unique_markets)
+        n_train_val = int(n_total * train_split)
+        n_val = int(n_total * val_split)
+        n_train_final = n_train_val - n_val
+        
+        train_markets = set(unique_markets[:n_train_final])
+        val_markets = set(unique_markets[n_train_final:n_train_val])
+        test_markets = set(unique_markets[n_train_val:])
+    
+    train_mask = np.array([m in train_markets for m in market_ids])
+    val_mask = np.array([m in val_markets for m in market_ids])
+    test_mask = np.array([m in test_markets for m in market_ids])
+    
+    return {
+        'train': (X[train_mask], y[train_mask]),
+        'val': (X[val_mask], y[val_mask]),
+        'test': (X[test_mask], y[test_mask]),
+        'n_markets': {
+            'train': len(train_markets),
+            'val': len(val_markets),
+            'test': len(test_markets),
+        }
+    }
+
+
+# Compute MAE, MSE, RMSE metrics
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    mae = np.mean(np.abs(y_true - y_pred))
+    mse = np.mean((y_true - y_pred) ** 2)
+    rmse = np.sqrt(mse)
+    return {'MAE': mae, 'MSE': mse, 'RMSE': rmse}
+
+
 # Evaluate naive last-value baseline on prediction market data
 def evaluate_naive_baseline(
     data_path: str,
-    context_length: int = 256,
-    horizon_length: int = 128,
-    stride: int = 32,
-    test_split: float = 0.2,
-    seed: int = 42,
+    context_length: int = CONTEXT_LENGTH,
+    horizon_length: int = HORIZON_LENGTH,
+    stride: int = STRIDE,
+    train_split: float = TRAIN_SPLIT,
+    val_split: float = VAL_SPLIT,
+    seed: int = SEED,
+    processor_path: str = None,
+    use_hours: bool = False,
 ):
-    print("="*60)
+    print("=" * 60)
     print("NAIVE LAST-VALUE BASELINE")
-    print("="*60)
+    print("=" * 60)
     print(f"Context length: {context_length}")
     print(f"Horizon length: {horizon_length}")
     print(f"Stride: {stride}")
-    print("="*60)
+    print(f"Seed: {seed}")
+    print(f"Features: price" + (" + hours_to_resolution" if use_hours else " only"))
+    print("=" * 60)
     
     # Load data
     print(f"\nLoading data from {data_path}...")
@@ -74,100 +162,124 @@ def evaluate_naive_baseline(
     
     # Create sequences
     print("\nCreating sequences...")
-    X, y, market_ids = create_sequences(df, context_length, horizon_length, stride)
+    X, y, market_ids = create_sequences(
+        df, context_length, horizon_length, stride, use_hours
+    )
     print(f"Total sequences: {len(X):,}")
     print(f"Context shape: {X.shape}")
     print(f"Target shape: {y.shape}")
     
     # Split by market (zero-shot evaluation)
-    unique_markets = np.unique(market_ids)
-    np.random.seed(seed)
-    train_markets, test_markets = train_test_split(
-        unique_markets, test_size=test_split, random_state=seed
+    splits = split_by_market(
+        X, y, market_ids,
+        train_split=train_split,
+        val_split=val_split,
+        seed=seed,
+        processor_path=processor_path,
     )
     
-    train_mask = np.isin(market_ids, train_markets)
-    test_mask = np.isin(market_ids, test_markets)
+    X_train, y_train = splits['train']
+    X_val, y_val = splits['val']
+    X_test, y_test = splits['test']
     
-    X_train, y_train = X[train_mask], y[train_mask]
-    X_test, y_test = X[test_mask], y[test_mask]
+    print(f"\nTrain sequences: {len(X_train):,} ({splits['n_markets']['train']} markets)")
+    print(f"Val sequences: {len(X_val):,} ({splits['n_markets']['val']} markets)")
+    print(f"Test sequences: {len(X_test):,} ({splits['n_markets']['test']} markets)")
     
-    print(f"\nTrain sequences: {len(X_train):,} ({len(train_markets)} markets)")
-    print(f"Test sequences: {len(X_test):,} ({len(test_markets)} markets)")
-    
-    # Generate naive predictions (no training needed!)
+    # Generate naive predictions
     print("\nGenerating naive baseline predictions...")
     y_pred_train = naive_last_value_forecast(X_train, horizon_length)
+    y_pred_val = naive_last_value_forecast(X_val, horizon_length)
     y_pred_test = naive_last_value_forecast(X_test, horizon_length)
     
     # Compute metrics
-    def compute_metrics(y_true, y_pred):
-        mae = np.mean(np.abs(y_true - y_pred))
-        mse = np.mean((y_true - y_pred) ** 2)
-        rmse = np.sqrt(mse)
-        return mae, mse, rmse
-    
-    train_mae, train_mse, train_rmse = compute_metrics(y_train.flatten(), y_pred_train.flatten())
-    test_mae, test_mse, test_rmse = compute_metrics(y_test.flatten(), y_pred_test.flatten())
+    train_metrics = compute_metrics(y_train.flatten(), y_pred_train.flatten())
+    val_metrics = compute_metrics(y_val.flatten(), y_pred_val.flatten())
+    test_metrics = compute_metrics(y_test.flatten(), y_pred_test.flatten())
     
     # Results
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("RESULTS")
-    print("="*60)
+    print("=" * 60)
     
-    print("\nTraining Set (for reference):")
-    print(f"  MAE:  {train_mae:.6f}")
-    print(f"  MSE:  {train_mse:.6f}")
-    print(f"  RMSE: {train_rmse:.6f}")
+    print("\nTraining Set:")
+    print(f"  MAE:  {train_metrics['MAE']:.6f}")
+    print(f"  MSE:  {train_metrics['MSE']:.6f}")
+    print(f"  RMSE: {train_metrics['RMSE']:.6f}")
+    
+    print("\nValidation Set:")
+    print(f"  MAE:  {val_metrics['MAE']:.6f}")
+    print(f"  MSE:  {val_metrics['MSE']:.6f}")
+    print(f"  RMSE: {val_metrics['RMSE']:.6f}")
     
     print("\nTest Set (Zero-Shot on Held-Out Markets):")
-    print(f"  MAE:  {test_mae:.6f}")
-    print(f"  MSE:  {test_mse:.6f}")
-    print(f"  RMSE: {test_rmse:.6f}")
+    print(f"  MAE:  {test_metrics['MAE']:.6f}")
+    print(f"  MSE:  {test_metrics['MSE']:.6f}")
+    print(f"  RMSE: {test_metrics['RMSE']:.6f}")
     
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("USE THESE FOR SCALED MAE CALCULATION:")
-    print("="*60)
-    print(f"Naive Baseline MAE: {test_mae:.6f}")
-    print(f"\nScaled MAE = Model_MAE / {test_mae:.6f}")
-    print(f"\nExample: If your model has MAE=0.10")
-    print(f"         Scaled MAE = 0.10 / {test_mae:.6f} = {0.10/test_mae:.4f}")
-    print("="*60)
+    print("=" * 60)
+    print(f"Naive Baseline MAE: {test_metrics['MAE']:.6f}")
+    print(f"\nScaled MAE = Model_MAE / {test_metrics['MAE']:.6f}")
+    print(f"\nInterpretation:")
+    print(f"  < 1.0 = better than naive baseline")
+    print(f"  < 0.9 = good performance")
+    print(f"  < 0.8 = excellent performance")
+    print("=" * 60)
     
-    # Also compute for different horizons for reference
-    print("\n" + "="*60)
+    # Metrics by horizon
+    print("\n" + "=" * 60)
     print("NAIVE BASELINE MAE BY FORECAST HORIZON")
-    print("="*60)
+    print("=" * 60)
     
     horizons = [10, 32, 64, 128]
+    horizon_metrics = {}
     for h in horizons:
         if h <= horizon_length:
-            # Use only first h steps of predictions and targets
             y_pred_h = y_pred_test[:, :h]
             y_true_h = y_test[:, :h]
             mae_h = np.mean(np.abs(y_true_h - y_pred_h))
+            horizon_metrics[h] = mae_h
             print(f"  Horizon {h:3d} steps: MAE = {mae_h:.6f}")
     
     return {
-        'train_mae': train_mae,
-        'train_mse': train_mse,
-        'train_rmse': train_rmse,
-        'test_mae': test_mae,
-        'test_mse': test_mse,
-        'test_rmse': test_rmse,
+        'train': train_metrics,
+        'val': val_metrics,
+        'test': test_metrics,
+        'horizon_metrics': horizon_metrics,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate naive last-value baseline for scaled MAE computation"
+        description="Evaluate naive last-value baseline",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--data", type=str, required=True, help="Path to parquet data")
-    parser.add_argument("--context-length", type=int, default=256, help="Context length")
-    parser.add_argument("--horizon-length", type=int, default=128, help="Horizon length")
-    parser.add_argument("--stride", type=int, default=32, help="Stride for windowing")
-    parser.add_argument("--test-split", type=float, default=0.2, help="Test split ratio")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--data", type=str, required=True,
+                        help="Path to parquet data")
+    
+    # Sequence parameters
+    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH,
+                        help="Context length")
+    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH,
+                        help="Horizon length")
+    parser.add_argument("--stride", type=int, default=STRIDE,
+                        help="Stride for windowing")
+    
+    # Split parameters
+    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT,
+                        help="Train+val split fraction")
+    parser.add_argument("--val-split", type=float, default=VAL_SPLIT,
+                        help="Validation split fraction (from total)")
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help="Random seed")
+    parser.add_argument("--processor", type=str, default=None,
+                        help="Path to saved processor.pkl for consistent market splits")
+    
+    # Feature options
+    parser.add_argument("--use-hours", action="store_true", default=False,
+                        help="Include hours_to_resolution (for context shape alignment)")
     
     args = parser.parse_args()
     
@@ -176,11 +288,13 @@ def main():
         context_length=args.context_length,
         horizon_length=args.horizon_length,
         stride=args.stride,
-        test_split=args.test_split,
+        train_split=args.train_split,
+        val_split=args.val_split,
         seed=args.seed,
+        processor_path=args.processor,
+        use_hours=args.use_hours,
     )
 
 
 if __name__ == "__main__":
     main()
-

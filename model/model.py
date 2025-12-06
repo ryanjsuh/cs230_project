@@ -1,11 +1,5 @@
 """
-Decoder-only Transformer for prediction market forecasting.
-
-Architecture alignment with Google's TimesFM:
-Patch-based tokenization with ResidualBlock tokenizer, RevIN (Reversible Instance Normalization) for input normalization, Stacked causal Transformer decoder blocks, Output patch length can exceed input patch length (4:1 ratio in TimesFM), Mask concatenation with inputs in tokenizer
-
-Domain-specific adaptations for prediction markets:
-Sigmoid activation to bound outputs to [0, 1] probability range, Hours-to-resolution auxiliary input, Learned category embeddings for market type conditioning
+Decoder-only Transformer for patch-based prediction market forecasting, with RevIN, category embeddings, and sigmoid output for [0, 1] probability predictions
 """
 
 import math
@@ -174,14 +168,18 @@ class MultiHeadSelfAttention(nn.Module):
         k = self.k_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         
+        # Track offset for causal mask
+        cache_len = 0
+        
         # Handle KV caching for autoregressive decoding
         new_cache = None
         if decode_cache is not None:
             # Append new K, V to cache
             cache_k = decode_cache.key
             cache_v = decode_cache.value
+            cache_len = cache_k.size(2)
             
-            # Update cache (simplified for now)
+            # Concatenate cached K, V with new K, V
             k = torch.cat([cache_k, k], dim=2)
             v = torch.cat([cache_v, v], dim=2)
             
@@ -190,20 +188,30 @@ class MultiHeadSelfAttention(nn.Module):
                 key=k,
                 value=v,
             )
+        else:
+            # Initialize cache for future use
+            new_cache = DecodeCache(
+                next_index=torch.tensor(seq_len, device=x.device),
+                key=k,
+                value=v,
+            )
         
         # Compute attention scores
+        kv_len = k.size(2)
         attn = torch.matmul(q, k.transpose(-2, -1)) / self.scale
         
         # Apply causal mask
-        kv_len = k.size(2)
-        if mask is None:
-            # Create causal mask
-            causal_mask = torch.triu(
-                torch.ones(seq_len, kv_len, device=x.device, dtype=torch.bool), 
-                diagonal=kv_len - seq_len + 1
-            )
-            attn = attn.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
-        else:
+        causal_mask = torch.ones(seq_len, kv_len, device=x.device, dtype=torch.bool)
+        for i in range(seq_len):
+            # Query at position i (which is actually position cache_len + i in full sequence)
+            # can attend to positions 0 through cache_len + i (inclusive)
+            causal_mask[i, :cache_len + i + 1] = False
+        
+        attn = attn.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+        
+        # Apply additional padding mask if provided
+        if mask is not None:
+            # mask shape: (batch, kv_len) where True means masked/padded
             attn = attn.masked_fill(mask.unsqueeze(1).unsqueeze(2), float('-inf'))
         
         attn = F.softmax(attn, dim=-1)
@@ -394,6 +402,10 @@ class PredictionMarketTimesFM(nn.Module):
         # Tokenize patches
         x = self.tokenizer(normed_patches, mask)  # (batch, num_patches, d_model)
         
+        # Derive a patch-level padding mask
+        # mask shape: (batch, num_patches, patch_len)
+        patch_pad_mask = mask.any(dim=-1)  # (batch, num_patches)
+        
         # Add category embedding if provided
         if category_ids is not None:
             cat_embed = self.category_embed(category_ids)  # (batch, d_model)
@@ -409,7 +421,21 @@ class PredictionMarketTimesFM(nn.Module):
         # Pass through transformer layers
         new_caches = []
         for i, layer in enumerate(self.transformer_layers):
-            x, new_cache = layer(x, None, decode_caches[i])
+            # For cached decoding, extend mask to cover cached keys
+            if decode_caches[i] is not None and decode_caches[i].key is not None:
+                cache_len = decode_caches[i].key.size(2)
+                # cached keys are already valid (no padding), so prepend zeros
+                full_mask = torch.cat(
+                    [
+                        torch.zeros(patch_pad_mask.size(0), cache_len, device=patch_pad_mask.device, dtype=patch_pad_mask.dtype),
+                        patch_pad_mask,
+                    ],
+                    dim=1,
+                )
+            else:
+                full_mask = patch_pad_mask
+            
+            x, new_cache = layer(x, full_mask, decode_caches[i])
             new_caches.append(new_cache)
         
         # Final norm
@@ -428,11 +454,15 @@ class PredictionMarketTimesFM(nn.Module):
         context_mask: Optional[torch.Tensor] = None,
         category_ids: Optional[torch.Tensor] = None,
         num_steps: int = 1,
+        time_delta_per_step: float = 1.0,  
     ) -> torch.Tensor:
         self.eval()
         device = context_patches.device
         batch_size = context_patches.size(0)
         
+        # Get the last hours_to_resolution from context to propagate forward
+        # context_patches: (batch, num_patches, patch_len, n_features)
+        last_hours = context_patches[:, -1, -1, 1]  # (batch,)
         # Prefill with context
         predictions, (mu, sigma), decode_caches = self.forward(
             context_patches, 
@@ -442,6 +472,10 @@ class PredictionMarketTimesFM(nn.Module):
         
         # Get prediction for last context patch
         all_outputs = [predictions[:, -1:, :]]  # (batch, 1, output_patch_len)
+        
+        # Update hours for next step
+        # Each output patch covers output_patch_len time steps
+        current_hours = last_hours - time_delta_per_step * self.config.output_patch_len
         
         # Autoregressive decoding for additional steps
         if num_steps > 1:
@@ -459,7 +493,15 @@ class PredictionMarketTimesFM(nn.Module):
                     self.config.n_price_features + self.config.n_aux_features,
                     device=device
                 )
-                new_features[..., 0] = new_patches 
+                new_features[..., 0] = new_patches
+                
+                # Propagate hours_to_resolution
+                for patch_idx in range(m):
+                    for t in range(self.config.input_patch_len):
+                        time_offset = patch_idx * self.config.input_patch_len + t
+                        new_features[:, patch_idx, t, 1] = (
+                            current_hours - time_delta_per_step * time_offset
+                        ).clamp(min=0)  
                 
                 # No mask for generated patches
                 new_mask = torch.zeros(
@@ -477,6 +519,9 @@ class PredictionMarketTimesFM(nn.Module):
                 
                 all_outputs.append(predictions[:, -1:, :])
                 last_pred = predictions[:, -1, :]
+                
+                # Update hours for next iteration
+                current_hours = current_hours - time_delta_per_step * self.config.output_patch_len
         
         return torch.cat(all_outputs, dim=1)  # (batch, num_steps, output_patch_len)
     

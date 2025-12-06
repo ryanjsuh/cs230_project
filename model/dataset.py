@@ -3,6 +3,7 @@ Dataset and data loading utilities for prediction market data:
 Loading Parquet files, windowing sequences into context/horizon patches, train/val/test splits by market (for zero-shot evaluation), normalization and category encoding  
 """
 
+import logging
 import numpy as np
 import pandas as pd
 import torch
@@ -13,6 +14,10 @@ from pathlib import Path
 import pickle
 
 from model.config import ModelConfig, DataConfig
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Dataset for prediction market time series
 class PredictionMarketDataset(Dataset):
@@ -120,20 +125,24 @@ class DataProcessor:
         
         # Update model config with actual number of categories
         n_categories = len(self.category_encoder.classes_)
-        print(f"Found {n_categories} unique categories")
+        self.model_config.n_categories = n_categories
+        print(f"Found {n_categories} unique categories (updated model_config.n_categories)")
         
         # Split markets into train/val/test
+        # train_split = fraction for train+val combined (e.g., 0.8 means 80% train+val, 20% test)
+        # val_split = fraction of total for validation (e.g., 0.1 means 10% val)
         unique_markets = df['market_id'].unique()
         np.random.seed(seed)
         np.random.shuffle(unique_markets)
         
-        n_train = int(len(unique_markets) * train_split)
-        n_val = int(n_train * val_split)
-        n_train_final = n_train - n_val
+        n_total = len(unique_markets)
+        n_train_val = int(n_total * train_split)  
+        n_val = int(n_total * val_split)          
+        n_train_final = n_train_val - n_val       
         
         self.train_markets = list(unique_markets[:n_train_final])
-        self.val_markets = list(unique_markets[n_train_final:n_train])
-        self.test_markets = list(unique_markets[n_train:])
+        self.val_markets = list(unique_markets[n_train_final:n_train_val])
+        self.test_markets = list(unique_markets[n_train_val:])
         
         print(f"Markets split: {len(self.train_markets)} train, {len(self.val_markets)} val, {len(self.test_markets)} test")
         
@@ -250,6 +259,10 @@ class DataProcessor:
             prices = sequences[:, :, 0].flatten().reshape(-1, 1)
             self.price_scaler = StandardScaler()
             self.price_scaler.fit(prices)
+            logger.warning("Price normalization is enabled. This may conflict with "
+                          "sigmoid output activation for prediction markets.")
+        else:
+            self.price_scaler = None
         
         if self.data_config.normalize_hours:
             hours = sequences[:, :, 1].flatten().reshape(-1, 1)

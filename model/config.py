@@ -90,7 +90,9 @@ class DataConfig:
     stride: int = 32                  
     
     # Normalization
-    normalize_prices: bool = True
+    # NOTE: For prediction markets, prices are already in [0, 1] so normalization
+    # should be False to work correctly with sigmoid output activation
+    normalize_prices: bool = False
     normalize_hours: bool = True
     
     # Category handling

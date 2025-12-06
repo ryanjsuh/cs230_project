@@ -76,8 +76,10 @@ class Trainer:
             self.scheduler = None
         
         # Mixed precision
-        use_amp = False  
-        self.scaler = GradScaler() if use_amp else None
+        self.use_amp = config.mixed_precision and torch.cuda.is_available()
+        self.scaler = GradScaler() if self.use_amp else None
+        if self.use_amp:
+            print("Mixed precision training enabled (AMP)")
         
         # Tracking
         self.best_val_loss = float('inf')
@@ -109,7 +111,7 @@ class Trainer:
             self.optimizer.zero_grad()
             
             # Forward pass with optional mixed precision
-            if self.scaler is not None:
+            if self.use_amp:
                 with autocast():
                     # Model returns (predictions, stats, caches)
                     predictions, _, _ = self.model(context_patches, mask, category_ids)
