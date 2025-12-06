@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
-Baseline LSTM Forecaster for Polymarket Price Prediction
-
-This script trains an LSTM model to forecast prediction market prices.
-It uses a lookback window of 20 timesteps to predict the next 10 timesteps.
-
-Usage:
-    python baseline.py --data /path/to/polymarket_data.parquet
-    python baseline.py --data /path/to/polymarket_data.parquet --epochs 30 --batch-size 128
+LSTM baseline
 """
 
 import argparse
@@ -284,7 +277,7 @@ def parse_args():
         "--data",
         type=str,
         required=True,
-        help="path to the polymarket_data.parquet file"
+        help="path to the parquet file"
     )
     parser.add_argument(
         "--epochs",
@@ -312,7 +305,6 @@ def parse_args():
     )
     
     return parser.parse_args()
-
 
 if __name__ == "__main__":
     args = parse_args()
