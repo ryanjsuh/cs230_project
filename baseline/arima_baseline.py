@@ -19,7 +19,6 @@ from statsmodels.tsa.stattools import adfuller
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-# Default ARIMA order
 DEFAULT_ORDER = (5, 1, 2)  # (p, d, q)
 CONTEXT_LENGTH = 256
 HORIZON_LENGTH = 128
@@ -28,8 +27,6 @@ SEED = 42
 TRAIN_SPLIT = 0.8
 VAL_SPLIT = 0.1
 
-
-# Create windowed sequences with stride
 def create_sequences(
     df: pd.DataFrame,
     context_length: int = CONTEXT_LENGTH,
@@ -59,7 +56,7 @@ def create_sequences(
     return np.array(sequences), np.array(targets), np.array(market_ids)
 
 
-# Split data by market for zero-shot evals
+# split data by market for zero-shot evals
 def split_by_market(
     X: np.ndarray,
     y: np.ndarray,
@@ -106,7 +103,7 @@ def split_by_market(
     }
 
 
-# Check if series is stationary using Augmented Dickey-Fuller test
+# Augmented Dickey-Fuller test
 def check_stationarity(series: np.ndarray, significance: float = 0.05) -> Tuple[bool, float]:
     try:
         result = adfuller(series, autolag='AIC')
@@ -117,7 +114,7 @@ def check_stationarity(series: np.ndarray, significance: float = 0.05) -> Tuple[
         return False, 1.0
 
 
-# Fit ARIMA model and forecast horizon steps ahead
+# fit ARIMA model and forecast horizon steps ahead
 def fit_arima_and_forecast(
     context: np.ndarray,
     horizon: int,
@@ -144,10 +141,10 @@ def fit_arima_and_forecast(
         except Exception:
             continue
     
-    # Fallback: naive forecast
+    # fallback to naive forecast
     return np.full(horizon, context[-1])
 
-# Fit ARIMA and generate forecasts for a batch of sequences
+# fit ARIMA and generate forecasts for a batch of sequences
 def arima_forecast_batch(
     contexts: np.ndarray,
     horizon: int,
@@ -157,7 +154,7 @@ def arima_forecast_batch(
 ) -> np.ndarray:
     n_samples = len(contexts)
     
-    # Apply sample cap if specified
+    # apply sample cap if specified
     if max_samples is not None and n_samples > max_samples:
         print(f"Limiting to {max_samples:,} samples (from {n_samples:,})")
         indices = np.random.choice(n_samples, max_samples, replace=False)
@@ -182,7 +179,7 @@ def arima_forecast_batch(
     return predictions, indices
 
 
-# Compute MAE, MSE, RMSE metrics
+# MAE, MSE, RMSE
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     mae = np.mean(np.abs(y_true - y_pred))
     mse = np.mean((y_true - y_pred) ** 2)
@@ -190,7 +187,7 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     return {'MAE': mae, 'MSE': mse, 'RMSE': rmse}
 
 
-# Evaluate ARIMA baseline on prediction market data 
+# ARIMA eval
 def evaluate_arima_baseline(
     data_path: str,
     order: Tuple[int, int, int] = DEFAULT_ORDER,
@@ -203,27 +200,20 @@ def evaluate_arima_baseline(
     processor_path: str = None,
     max_test_samples: Optional[int] = None,
 ) -> dict:
-    print("=" * 60)
-    print("ARIMA BASELINE")
-    print("=" * 60)
     print(f"ARIMA Order: (p={order[0]}, d={order[1]}, q={order[2]})")
-    print(f"  - AR (p={order[0]}): Autoregressive terms")
-    print(f"  - I  (d={order[1]}): Differencing order")
-    print(f"  - MA (q={order[2]}): Moving average terms")
+    print(f"AR (p={order[0]}): Autoregressive terms")
+    print(f"I (d={order[1]}): Differencing order")
+    print(f"MA (q={order[2]}): Moving average terms")
     print(f"Context length: {context_length}")
     print(f"Horizon length: {horizon_length}")
     print(f"Stride: {stride}")
     print(f"Seed: {seed}")
-    print(f"Features: price only (ARIMA is univariate)")
-    print("=" * 60)
     
-    # Load data
-    print(f"\nLoading data from {data_path}...")
+    print(f"\nLoading data from {data_path}")
     df = pd.read_parquet(data_path)
     print(f"Loaded {len(df):,} rows")
     
-    # Create sequences
-    print("\nCreating sequences...")
+    print("\nCreating sequences")
     X, y, market_ids = create_sequences(df, context_length, horizon_length, stride)
     print(f"Total sequences: {len(X):,}")
     print(f"Context shape: {X.shape}")
@@ -246,16 +236,14 @@ def evaluate_arima_baseline(
     print(f"Val sequences: {len(X_val):,} ({splits['n_markets']['val']} markets)")
     print(f"Test sequences: {len(X_test):,} ({splits['n_markets']['test']} markets)")
     
-    # Check stationarity on sample
-    print("\nChecking stationarity on sample of training data...")
+    # check stationarity
+    print("\nChecking stationarity on sample of training data")
     sample_indices = np.random.choice(len(X_train), min(100, len(X_train)), replace=False)
     stationary_count = sum(check_stationarity(X_train[idx])[0] for idx in sample_indices)
     print(f"Stationary series: {stationary_count}/{len(sample_indices)} "
           f"({100*stationary_count/len(sample_indices):.1f}%)")
     
-    # Generate ARIMA predictions
-    print(f"\nFitting ARIMA models and generating forecasts on test set...")
-    print(f"(ARIMA fits a separate model per sequence - this may take a while)")
+    print(f"\nFitting ARIMA models and generating forecasts on test set")
     
     start_time = time.time()
     y_pred_test, sample_indices = arima_forecast_batch(
@@ -265,7 +253,7 @@ def evaluate_arima_baseline(
     )
     elapsed = time.time() - start_time
     
-    # If we sampled, also sample targets
+    # if we sampled, also sample targets
     if sample_indices is not None:
         y_test_eval = y_test[sample_indices]
     else:
@@ -273,10 +261,10 @@ def evaluate_arima_baseline(
     
     print(f"Completed in {elapsed:.1f}s ({len(y_pred_test)/elapsed:.1f} sequences/second)")
     
-    # Compute metrics
+    # metrics
     test_metrics = compute_metrics(y_test_eval.flatten(), y_pred_test.flatten())
     
-    # Compute naive baseline for scaled MAE
+    # naive baseline for scaled MAE
     naive_preds = np.repeat(X_test[:len(y_pred_test), -1:], horizon_length, axis=1)
     if sample_indices is not None:
         naive_preds = naive_preds[sample_indices]
@@ -284,31 +272,24 @@ def evaluate_arima_baseline(
     
     scaled_mae = test_metrics['MAE'] / naive_metrics['MAE']
     
-    # Results
-    print("\n" + "=" * 60)
     print("RESULTS")
-    print("=" * 60)
     
     print("\nTest Set (Zero-Shot on Held-Out Markets):")
-    print(f"  MAE:  {test_metrics['MAE']:.6f}")
-    print(f"  MSE:  {test_metrics['MSE']:.6f}")
-    print(f"  RMSE: {test_metrics['RMSE']:.6f}")
+    print(f"\nMAE: {test_metrics['MAE']:.6f}")
+    print(f"MSE: {test_metrics['MSE']:.6f}")
+    print(f"RMSE: {test_metrics['RMSE']:.6f}")
     
-    print("\n" + "-" * 60)
     print("SCALED MAE:")
-    print("-" * 60)
     print(f"Naive Baseline MAE: {naive_metrics['MAE']:.6f}")
-    print(f"ARIMA MAE:          {test_metrics['MAE']:.6f}")
-    print(f"Scaled MAE:         {scaled_mae:.4f}")
+    print(f"ARIMA MAE: {test_metrics['MAE']:.6f}")
+    print(f"Scaled MAE: {scaled_mae:.4f}")
     if scaled_mae < 1.0:
-        print(f"  -> ARIMA beats naive baseline by {(1-scaled_mae)*100:.1f}%")
+        print(f" so ARIMA beats naive baseline by {(1-scaled_mae)*100:.1f}%")
     else:
-        print(f"  -> Naive baseline beats ARIMA by {(scaled_mae-1)*100:.1f}%")
+        print(f" so naive baseline beats ARIMA by {(scaled_mae-1)*100:.1f}%")
     
-    # Metrics by horizon
-    print("\n" + "=" * 60)
+    # metrics by horizon
     print("ARIMA MAE BY FORECAST HORIZON")
-    print("=" * 60)
     
     horizons = [10, 32, 64, 128]
     horizon_metrics = {}
@@ -318,15 +299,11 @@ def evaluate_arima_baseline(
             y_true_h = y_test_eval[:, :h]
             mae_h = np.mean(np.abs(y_true_h - y_pred_h))
             horizon_metrics[h] = mae_h
-            print(f"  Horizon {h:3d} steps: MAE = {mae_h:.6f}")
+            print(f"Horizon {h:3d} steps: MAE = {mae_h:.6f}")
     
-    print("\n" + "=" * 60)
-    print("USE THESE FOR MODEL COMPARISON:")
-    print("=" * 60)
-    print(f"ARIMA Baseline MAE:  {test_metrics['MAE']:.6f}")
+    print(f"\nARIMA Baseline MAE:  {test_metrics['MAE']:.6f}")
     print(f"ARIMA Baseline RMSE: {test_metrics['RMSE']:.6f}")
     print(f"ARIMA Scaled MAE:    {scaled_mae:.4f}")
-    print("=" * 60)
     
     return {
         'test_mae': test_metrics['MAE'],
@@ -339,7 +316,7 @@ def evaluate_arima_baseline(
     }
 
 
-# Simple grid search to find reasonable ARIMA order
+# simple grid search for ARIMA order
 def grid_search_order(
     data_path: str,
     context_length: int = CONTEXT_LENGTH,
@@ -347,9 +324,7 @@ def grid_search_order(
     max_samples: int = 500,
     seed: int = SEED,
 ) -> Tuple[int, int, int]:
-    print("=" * 60)
     print("ARIMA ORDER GRID SEARCH")
-    print("=" * 60)
     
     orders_to_try = [
         (1, 1, 0),
@@ -363,7 +338,7 @@ def grid_search_order(
     df = pd.read_parquet(data_path)
     X, y, market_ids = create_sequences(df, context_length, horizon_length)
     
-    # Use subset for grid search (with cap)
+    # with cap
     if len(X) > max_samples:
         indices = np.random.RandomState(seed).choice(len(X), max_samples, replace=False)
         X = X[indices]
@@ -392,45 +367,29 @@ def grid_search_order(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Evaluate ARIMA baseline",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument("--data", type=str, required=True,
-                        help="Path to parquet data file")
-    parser.add_argument("--order", type=str, default="5,1,2",
-                        help="ARIMA order as 'p,d,q'")
+    parser.add_argument("--data", type=str, required=True)
+    parser.add_argument("--order", type=str, default="5,1,2")
     
-    # Sequence parameters (aligned with model defaults)
-    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH,
-                        help="Context length")
-    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH,
-                        help="Horizon length")
-    parser.add_argument("--stride", type=int, default=STRIDE,
-                        help="Stride for windowing")
+    # sequence params
+    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH)
+    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH)
+    parser.add_argument("--stride", type=int, default=STRIDE)
     
-    # Split parameters (aligned with model)
-    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT,
-                        help="Train+val split fraction")
-    parser.add_argument("--val-split", type=float, default=VAL_SPLIT,
-                        help="Validation split fraction (from total)")
-    parser.add_argument("--seed", type=int, default=SEED,
-                        help="Random seed")
-    parser.add_argument("--processor", type=str, default=None,
-                        help="Path to saved processor.pkl for consistent market splits")
+    # split params
+    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT)
+    parser.add_argument("--val-split", type=float, default=VAL_SPLIT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--processor", type=str, default=None)
     
-    # Performance options
-    parser.add_argument("--max-test-samples", type=int, default=None,
-                        help="Limit test samples for faster evaluation")
-    parser.add_argument("--max-grid-samples", type=int, default=500,
-                        help="Limit samples for grid search")
-    parser.add_argument("--grid-search", action="store_true",
-                        help="Run grid search to find best ARIMA order")
+    # perf options
+    parser.add_argument("--max-test-samples", type=int, default=None)
+    parser.add_argument("--max-grid-samples", type=int, default=500)
+    parser.add_argument("--grid-search", action="store_true")
     
     args = parser.parse_args()
     
-    # Parse order
     order = tuple(int(x) for x in args.order.split(","))
     if len(order) != 3:
         raise ValueError("Order must be 'p,d,q' (e.g., '5,1,2')")

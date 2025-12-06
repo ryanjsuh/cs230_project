@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# Default hyperparams
+# default hyperparams
 CONTEXT_LENGTH = 256
 HORIZON_LENGTH = 128
 STRIDE = 32
@@ -72,7 +72,7 @@ def load_data(data_path: str) -> pd.DataFrame:
     return df
 
 
-# Create windowed sequences with stride
+# create windowed sequences with stride
 def create_sequences(
     df: pd.DataFrame,
     context_length: int = CONTEXT_LENGTH,
@@ -97,7 +97,7 @@ def create_sequences(
         else:
             hours_to_res = None
         
-        # Sliding windows with stride
+        # sliding windows with stride
         for i in range(0, len(prices) - context_length - horizon_length + 1, stride):
             seq_prices = prices[i:i + context_length]
             target = prices[i + context_length:i + context_length + horizon_length]
@@ -123,7 +123,7 @@ def create_sequences(
     return X, y, market_ids
 
 
-# Split data by market for zero-shot evaluation
+# split data by market for zero-shot evaluation
 def split_by_market(
     X: np.ndarray,
     y: np.ndarray,
@@ -134,7 +134,7 @@ def split_by_market(
     processor_path: str = None,
 ) -> tuple:
     if processor_path is not None:
-        # Load splits from saved processor for exact alignment with model
+        # load splits from saved processor for exact alignment with model
         import pickle
         with open(processor_path, 'rb') as f:
             state = pickle.load(f)
@@ -143,7 +143,7 @@ def split_by_market(
         test_markets = set(state['test_markets'])
         print(f"Loaded market splits from {processor_path}")
     else:
-        # Create splits matching model's logic
+        # create splits that match model's logic
         unique_markets = np.unique(market_ids)
         np.random.seed(seed)
         np.random.shuffle(unique_markets)
@@ -172,7 +172,7 @@ def split_by_market(
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
-# Scale data: by default, prices aren't normalized
+# scale data (by default, prices aren't normalized)
 def scale_data(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -187,7 +187,7 @@ def scale_data(
     n_test = len(X_test)
     
     if normalize_prices:
-        # Normalize all features
+        # normalize all features
         X_train_flat = X_train.reshape(-1, n_features)
         X_val_flat = X_val.reshape(-1, n_features)
         X_test_flat = X_test.reshape(-1, n_features)
@@ -202,13 +202,13 @@ def scale_data(
         y_val_scaled = scaler_y.transform(y_val)
         y_test_scaled = scaler_y.transform(y_test)
     else:
-        # Only normalize hours_to_resolution (feature index 1), keep prices as-is
+        # only normalize hours_to_resolution and keep prices as they are
         X_train_scaled = X_train.copy()
         X_val_scaled = X_val.copy()
         X_test_scaled = X_test.copy()
         
         if n_features > 1:
-            # Normalize hours feature only
+            # normalize hours feature only
             hours_train = X_train[:, :, 1].flatten().reshape(-1, 1)
             hours_scaler = StandardScaler()
             hours_scaler.fit(hours_train)
@@ -223,7 +223,7 @@ def scale_data(
                 X_test[:, :, 1].reshape(-1, 1)
             ).reshape(n_test, context_len)
         
-        # No scaling for targets (prices in [0,1])
+        # no scaling
         y_train_scaled = y_train
         y_val_scaled = y_val
         y_test_scaled = y_test
@@ -249,7 +249,6 @@ def train_model(
     patience_counter = 0
     
     for epoch in range(num_epochs):
-        # Training
         model.train()
         total_loss = 0
         
@@ -266,7 +265,6 @@ def train_model(
         
         avg_train_loss = total_loss / len(train_loader)
         
-        # Validation
         model.eval()
         val_loss = 0
         with torch.no_grad():
@@ -281,7 +279,7 @@ def train_model(
             print(f"Epoch [{epoch + 1}/{num_epochs}], "
                   f"Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}")
         
-        # Early stopping
+        # early stop
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
@@ -338,10 +336,8 @@ def evaluate_model(
     }
 
 
-# Compute naive last-value baseline MAE
 def compute_naive_baseline_mae(X_test: np.ndarray, y_test: np.ndarray) -> float:
-    # Last price value from context
-    last_values = X_test[:, -1, 0]  # (n_samples,)
+    last_values = X_test[:, -1, 0]
     horizon_len = y_test.shape[1]
     naive_preds = np.repeat(last_values.reshape(-1, 1), horizon_len, axis=1)
     naive_mae = np.mean(np.abs(y_test - naive_preds))
@@ -352,14 +348,11 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    print("\n" + "=" * 60)
     print("LSTM BASELINE")
-    print("=" * 60)
-    print(f"Context length: {args.context_length}")
+    print(f"\nContext length: {args.context_length}")
     print(f"Horizon length: {args.horizon_length}")
     print(f"Stride: {args.stride}")
     print(f"Seed: {args.seed}")
-    print("=" * 60)
     
     df = load_data(args.data)
     
@@ -423,27 +416,23 @@ def main(args):
     print("\nEvaluating on test set...")
     metrics = evaluate_model(model, test_loader, scaler_y, device)
     
-    # Compute naive baseline for scaled MAE
     naive_mae = compute_naive_baseline_mae(X_test, y_test)
     scaled_mae = metrics['MAE'] / naive_mae
     
-    print("\n" + "=" * 60)
     print("RESULTS")
-    print("=" * 60)
-    print(f"MAE:  {metrics['MAE']:.6f}")
-    print(f"MSE:  {metrics['MSE']:.6f}")
+    print(f"\nMAE: {metrics['MAE']:.6f}")
+    print(f"MSE: {metrics['MSE']:.6f}")
     print(f"RMSE: {metrics['RMSE']:.6f}")
     print("\n" + "-" * 60)
     print("SCALED MAE:")
     print("-" * 60)
     print(f"Naive Baseline MAE: {naive_mae:.6f}")
-    print(f"LSTM MAE:           {metrics['MAE']:.6f}")
-    print(f"Scaled MAE:         {scaled_mae:.4f}")
+    print(f"LSTM MAE: {metrics['MAE']:.6f}")
+    print(f"Scaled MAE: {scaled_mae:.4f}")
     if scaled_mae < 1.0:
-        print(f"  -> LSTM beats naive baseline by {(1-scaled_mae)*100:.1f}%")
+        print(f" so LSTM beats naive baseline by {(1-scaled_mae)*100:.1f}%")
     else:
-        print(f"  -> Naive baseline beats LSTM by {(scaled_mae-1)*100:.1f}%")
-    print("=" * 60)
+        print(f" so Naive baseline beats LSTM by {(scaled_mae-1)*100:.1f}%")
     
     if args.save_model:
         torch.save({
@@ -464,60 +453,34 @@ def main(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train LSTM baseline model",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument("--data", type=str, required=True,
-                        help="Path to the parquet file")
+    parser.add_argument("--data", type=str, required=True)
     
-    # Sequence parameters (aligned with model defaults)
-    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH,
-                        help="Context length (lookback window)")
-    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH,
-                        help="Forecast horizon length")
-    parser.add_argument("--stride", type=int, default=STRIDE,
-                        help="Stride for windowing sequences")
+    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH)
+    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH)
+    parser.add_argument("--stride", type=int, default=STRIDE)
     
-    # Split parameters (aligned with model)
-    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT,
-                        help="Train+val split fraction")
-    parser.add_argument("--val-split", type=float, default=VAL_SPLIT,
-                        help="Validation split fraction (from total)")
-    parser.add_argument("--seed", type=int, default=SEED,
-                        help="Random seed for reproducibility")
-    parser.add_argument("--processor", type=str, default=None,
-                        help="Path to saved processor.pkl for consistent market splits")
+    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT)
+    parser.add_argument("--val-split", type=float, default=VAL_SPLIT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--processor", type=str, default=None)
     
-    # Feature options
-    parser.add_argument("--use-hours", action="store_true", default=True,
-                        help="Include hours_to_resolution feature")
-    parser.add_argument("--no-hours", dest="use_hours", action="store_false",
-                        help="Use price only (no hours_to_resolution)")
-    parser.add_argument("--normalize-prices", action="store_true", default=False,
-                        help="Normalize prices (default: False for [0,1] markets)")
+    parser.add_argument("--use-hours", action="store_true", default=True)
+    parser.add_argument("--no-hours", dest="use_hours", action="store_false")
+    parser.add_argument("--normalize-prices", action="store_true", default=False)
     
-    # Model parameters
-    parser.add_argument("--hidden-size", type=int, default=HIDDEN_SIZE,
-                        help="LSTM hidden size")
-    parser.add_argument("--num-layers", type=int, default=NUM_LAYERS,
-                        help="Number of LSTM layers")
-    parser.add_argument("--dropout", type=float, default=0.2,
-                        help="Dropout rate")
+    parser.add_argument("--hidden-size", type=int, default=HIDDEN_SIZE)
+    parser.add_argument("--num-layers", type=int, default=NUM_LAYERS)
+    parser.add_argument("--dropout", type=float, default=0.2)
     
-    # Training parameters
-    parser.add_argument("--epochs", type=int, default=50,
-                        help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=64,
-                        help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=0.001,
-                        help="Learning rate")
-    parser.add_argument("--patience", type=int, default=10,
-                        help="Early stopping patience")
+    # training params
+    parser.add_argument("--epochs", type=int, default=50,)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--patience", type=int, default=10)
     
-    parser.add_argument("--save-model", type=str, default=None,
-                        help="Path to save the trained model")
+    parser.add_argument("--save-model", type=str, default=None)
     
     return parser.parse_args()
 

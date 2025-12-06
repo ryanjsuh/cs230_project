@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-# Default hyperparams
+# default hyperparams
 CONTEXT_LENGTH = 256
 HORIZON_LENGTH = 128
 STRIDE = 32
@@ -20,22 +20,20 @@ TRAIN_SPLIT = 0.8
 VAL_SPLIT = 0.1
 
 
-# Predict last context value for entire horizon
+# predict last context value for entire horizon
 def naive_last_value_forecast(context: np.ndarray, horizon: int) -> np.ndarray:
     if context.ndim == 1:
-        # Single series: (L,) -> (H,)
+        # (L,) to (H,)
         return np.full(horizon, context[-1])
     elif context.ndim == 2:
-        # Batch univariate: (B, L) -> (B, H)
+        # (B, L) to (B, H)
         last_values = context[:, -1:]
         return np.repeat(last_values, horizon, axis=1)
     else:
-        # Batch multivariate: (B, L, D) -> use price feature (index 0)
+        # (B, L, D) to use price feature
         last_values = context[:, -1, 0:1]
         return np.repeat(last_values, horizon, axis=1)
 
-
-# Create windowed sequences with stride
 def create_sequences(
     df: pd.DataFrame,
     context_length: int,
@@ -77,8 +75,7 @@ def create_sequences(
     
     return np.array(sequences), np.array(targets), np.array(market_ids)
 
-
-# Split data by market for zero-shot evals
+# split data by market for zero-shot evals
 def split_by_market(
     X: np.ndarray,
     y: np.ndarray,
@@ -125,7 +122,7 @@ def split_by_market(
     }
 
 
-# Compute MAE, MSE, RMSE metrics
+# MAE, MSE, RMSE
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     mae = np.mean(np.abs(y_true - y_pred))
     mse = np.mean((y_true - y_pred) ** 2)
@@ -133,7 +130,7 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     return {'MAE': mae, 'MSE': mse, 'RMSE': rmse}
 
 
-# Evaluate naive last-value baseline on prediction market data
+# naive last-value baseline eval
 def evaluate_naive_baseline(
     data_path: str,
     context_length: int = CONTEXT_LENGTH,
@@ -145,22 +142,17 @@ def evaluate_naive_baseline(
     processor_path: str = None,
     use_hours: bool = False,
 ):
-    print("=" * 60)
     print("NAIVE LAST-VALUE BASELINE")
-    print("=" * 60)
-    print(f"Context length: {context_length}")
+    print(f"\nContext length: {context_length}")
     print(f"Horizon length: {horizon_length}")
     print(f"Stride: {stride}")
     print(f"Seed: {seed}")
     print(f"Features: price" + (" + hours_to_resolution" if use_hours else " only"))
-    print("=" * 60)
     
-    # Load data
     print(f"\nLoading data from {data_path}...")
     df = pd.read_parquet(data_path)
     print(f"Loaded {len(df):,} rows")
     
-    # Create sequences
     print("\nCreating sequences...")
     X, y, market_ids = create_sequences(
         df, context_length, horizon_length, stride, use_hours
@@ -169,7 +161,6 @@ def evaluate_naive_baseline(
     print(f"Context shape: {X.shape}")
     print(f"Target shape: {y.shape}")
     
-    # Split by market (zero-shot evaluation)
     splits = split_by_market(
         X, y, market_ids,
         train_split=train_split,
@@ -186,52 +177,38 @@ def evaluate_naive_baseline(
     print(f"Val sequences: {len(X_val):,} ({splits['n_markets']['val']} markets)")
     print(f"Test sequences: {len(X_test):,} ({splits['n_markets']['test']} markets)")
     
-    # Generate naive predictions
-    print("\nGenerating naive baseline predictions...")
+    print("\nGenerating naive baseline predictions")
     y_pred_train = naive_last_value_forecast(X_train, horizon_length)
     y_pred_val = naive_last_value_forecast(X_val, horizon_length)
     y_pred_test = naive_last_value_forecast(X_test, horizon_length)
     
-    # Compute metrics
     train_metrics = compute_metrics(y_train.flatten(), y_pred_train.flatten())
     val_metrics = compute_metrics(y_val.flatten(), y_pred_val.flatten())
     test_metrics = compute_metrics(y_test.flatten(), y_pred_test.flatten())
     
-    # Results
-    print("\n" + "=" * 60)
     print("RESULTS")
-    print("=" * 60)
     
     print("\nTraining Set:")
-    print(f"  MAE:  {train_metrics['MAE']:.6f}")
-    print(f"  MSE:  {train_metrics['MSE']:.6f}")
-    print(f"  RMSE: {train_metrics['RMSE']:.6f}")
+    print(f"\nMAE: {train_metrics['MAE']:.6f}")
+    print(f"MSE: {train_metrics['MSE']:.6f}")
+    print(f"RMSE: {train_metrics['RMSE']:.6f}")
     
     print("\nValidation Set:")
-    print(f"  MAE:  {val_metrics['MAE']:.6f}")
-    print(f"  MSE:  {val_metrics['MSE']:.6f}")
-    print(f"  RMSE: {val_metrics['RMSE']:.6f}")
+    print(f"\nMAE: {val_metrics['MAE']:.6f}")
+    print(f"MSE: {val_metrics['MSE']:.6f}")
+    print(f"RMSE: {val_metrics['RMSE']:.6f}")
     
     print("\nTest Set (Zero-Shot on Held-Out Markets):")
-    print(f"  MAE:  {test_metrics['MAE']:.6f}")
-    print(f"  MSE:  {test_metrics['MSE']:.6f}")
-    print(f"  RMSE: {test_metrics['RMSE']:.6f}")
+    print(f"\nMAE: {test_metrics['MAE']:.6f}")
+    print(f"MSE: {test_metrics['MSE']:.6f}")
+    print(f"RMSE: {test_metrics['RMSE']:.6f}")
     
-    print("\n" + "=" * 60)
-    print("USE THESE FOR SCALED MAE CALCULATION:")
-    print("=" * 60)
-    print(f"Naive Baseline MAE: {test_metrics['MAE']:.6f}")
+    print("USE THESE FOR SCALED MAE CALCULATION")
+    print(f"\nNaive Baseline MAE: {test_metrics['MAE']:.6f}")
     print(f"\nScaled MAE = Model_MAE / {test_metrics['MAE']:.6f}")
-    print(f"\nInterpretation:")
-    print(f"  < 1.0 = better than naive baseline")
-    print(f"  < 0.9 = good performance")
-    print(f"  < 0.8 = excellent performance")
-    print("=" * 60)
     
-    # Metrics by horizon
-    print("\n" + "=" * 60)
+    # metrics by horizon
     print("NAIVE BASELINE MAE BY FORECAST HORIZON")
-    print("=" * 60)
     
     horizons = [10, 32, 64, 128]
     horizon_metrics = {}
@@ -241,7 +218,7 @@ def evaluate_naive_baseline(
             y_true_h = y_test[:, :h]
             mae_h = np.mean(np.abs(y_true_h - y_pred_h))
             horizon_metrics[h] = mae_h
-            print(f"  Horizon {h:3d} steps: MAE = {mae_h:.6f}")
+            print(f"Horizon {h:3d} steps: MAE = {mae_h:.6f}")
     
     return {
         'train': train_metrics,
@@ -253,33 +230,23 @@ def evaluate_naive_baseline(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate naive last-value baseline",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--data", type=str, required=True,
-                        help="Path to parquet data")
+    parser.add_argument("--data", type=str, required=True)
     
-    # Sequence parameters
-    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH,
-                        help="Context length")
-    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH,
-                        help="Horizon length")
-    parser.add_argument("--stride", type=int, default=STRIDE,
-                        help="Stride for windowing")
+    # sequence params
+    parser.add_argument("--context-length", type=int, default=CONTEXT_LENGTH)
+    parser.add_argument("--horizon-length", type=int, default=HORIZON_LENGTH)
+    parser.add_argument("--stride", type=int, default=STRIDE)
     
-    # Split parameters
-    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT,
-                        help="Train+val split fraction")
-    parser.add_argument("--val-split", type=float, default=VAL_SPLIT,
-                        help="Validation split fraction (from total)")
-    parser.add_argument("--seed", type=int, default=SEED,
-                        help="Random seed")
-    parser.add_argument("--processor", type=str, default=None,
-                        help="Path to saved processor.pkl for consistent market splits")
+    # split params
+    parser.add_argument("--train-split", type=float, default=TRAIN_SPLIT)
+    parser.add_argument("--val-split", type=float, default=VAL_SPLIT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--processor", type=str, default=None)
     
-    # Feature options
-    parser.add_argument("--use-hours", action="store_true", default=False,
-                        help="Include hours_to_resolution (for context shape alignment)")
+    # feature options
+    parser.add_argument("--use-hours", action="store_true", default=False)
     
     args = parser.parse_args()
     
