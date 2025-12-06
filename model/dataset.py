@@ -118,6 +118,34 @@ class DataProcessor:
             if col not in df.columns:
                 raise ValueError(f"Missing required column: {col}")
         
+        # Remove NaN/Inf values 
+        print("Cleaning data (removing NaN/Inf values)...")
+        initial_rows = len(df)
+        
+        nan_mask = df[['price', 'hours_to_resolution']].isna().any(axis=1)
+        inf_mask = df['price'].isin([np.inf, -np.inf]) | df['hours_to_resolution'].isin([np.inf, -np.inf])
+        
+        # Remove bad rows
+        bad_mask = nan_mask | inf_mask
+        if bad_mask.sum() > 0:
+            print(f"  Removing {bad_mask.sum():,} rows with NaN/Inf values")
+            df = df[~bad_mask].copy()
+        
+        # Clip prices to [0, 1] range
+        price_below_0 = (df['price'] < 0).sum()
+        price_above_1 = (df['price'] > 1).sum()
+        if price_below_0 > 0 or price_above_1 > 0:
+            print(f"  Clipping {price_below_0:,} prices below 0 and {price_above_1:,} prices above 1")
+            df['price'] = df['price'].clip(0.0, 1.0)
+        
+        # Clip hours_to_resolution to non-negative
+        negative_hours = (df['hours_to_resolution'] < 0).sum()
+        if negative_hours > 0:
+            print(f"  Clipping {negative_hours:,} negative hours_to_resolution values to 0")
+            df['hours_to_resolution'] = df['hours_to_resolution'].clip(lower=0.0)
+        
+        print(f"  Cleaned: {initial_rows:,} -> {len(df):,} rows ({initial_rows - len(df):,} removed)")
+        
         # Handle category encoding
         df['category'] = df['category'].fillna(self.data_config.unknown_category)
         self.category_encoder = LabelEncoder()

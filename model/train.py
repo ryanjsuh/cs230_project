@@ -122,6 +122,14 @@ class Trainer:
                     pred_horizon = predictions[:, -horizon_patches:, :]
                     loss = self.criterion(pred_horizon, target_patches)
                 
+                # Guard against NaN/Inf loss
+                if not torch.isfinite(loss):
+                    print(f"  WARNING: NaN/Inf loss at batch {batch_idx}, skipping...")
+                    self.optimizer.zero_grad()
+                    # Update scaler to let it adjust scale factor
+                    self.scaler.update()
+                    continue
+                
                 self.scaler.scale(loss).backward()
                 
                 # Gradient clipping
@@ -156,12 +164,20 @@ class Trainer:
                 self.optimizer.step()
             
             loss_val = loss.item()
-            total_loss += loss_val
-            num_batches += 1
+            
+            # Only accumulate finite losses
+            if np.isfinite(loss_val):
+                total_loss += loss_val
+                num_batches += 1
             
             # Logging
             if batch_idx % self.config.log_every == 0:
                 print(f"  Batch {batch_idx}/{len(self.train_loader)}, Loss: {loss_val:.6f}")
+        
+        # Guard against division by zero
+        if num_batches == 0:
+            print("  WARNING: All batches had NaN/Inf loss this epoch!")
+            return float('nan')
         
         return total_loss / num_batches
     
